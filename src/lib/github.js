@@ -18,12 +18,11 @@ let currentConfig = { token: '', proxy: '', timeout: 20000 }
 
 /**
  * 获取 baseUrl
- * 优先级：用户配置的 CORS 代理 > /api/gh（开发走 Vite proxy，生产走 Vercel Serverless）> 直连
+ * 统一走 /api/gh：开发环境 Vite proxy → 本地 Clash，生产环境 Vercel edge rewrite → api.github.com
+ * 用户可在设置中覆盖为自定义代理（如 ghproxy.com 等 CORS 代理）
  */
 function resolveBaseUrl(proxy) {
   if (proxy) return proxy.replace(/\/$/, '')
-  // 开发环境走 Vite proxy（本地 Clash）；生产环境走 Vercel Serverless（/api/gh）
-  // 两者路径一致，统一用 /api/gh
   return '/api/gh'
 }
 

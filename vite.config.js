@@ -126,8 +126,6 @@ export default defineConfig(async () => {
           rewrite: (path) => path.replace(/^\/api\/gh/, ''),
           configure: (proxy) => {
             proxy.on('proxyReq', (proxyReq, req) => {
-              // proxyReq 的 headers 可能已经发送（http-proxy 内部时序问题），
-              // setHeader 会抛 ERR_HTTP_HEADERS_SENT 导致进程崩溃，必须 try-catch
               try {
                 if (req.headers.authorization) {
                   proxyReq.setHeader('Authorization', req.headers.authorization)
@@ -136,7 +134,6 @@ export default defineConfig(async () => {
             })
             proxy.on('error', (err, req, res) => {
               console.warn(`[proxy] 代理请求失败：`, err.message)
-              // 任何情况下都不要让进程崩溃 — 静默返回 502
               try {
                 if (res && !res.headersSent && !res.writableEnded) {
                   res.writeHead(502, { 'Content-Type': 'application/json' })
