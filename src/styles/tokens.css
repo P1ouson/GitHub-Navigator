@@ -1870,7 +1870,7 @@ a {
 
 .search-sidebar {
   position:fixed;
-  left:max(16px, calc((100vw - 1100px)/2 - 240px));
+  left:max(0px, calc((100vw - 1100px)/2 - 240px));
   top:80px;
   width:220px;
   max-height:calc(100vh - 100px);
