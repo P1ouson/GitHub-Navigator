@@ -1,0 +1,31 @@
+{
+  "name": "github-navigator",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "dexie": "^4.0.8",
+    "octokit": "^4.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-force-graph-3d": "^1.29.1",
+    "react-router-dom": "^6.26.2",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@vitejs/plugin-react": "^4.3.2",
+    "https-proxy-agent": "^9.1.0",
+    "jsdom": "^25.0.1",
+    "vite": "^5.4.8",
+    "vitest": "^2.1.9"
+  }
+}

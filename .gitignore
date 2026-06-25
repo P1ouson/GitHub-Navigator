@@ -1,0 +1,15 @@
+node_modules
+dist
+.env
+.env.local
+*.log
+*.docx
+
+# 开发调试临时文件
+test_output.txt
+tests/analyzeFailures.js
+tests/failures.json
+tests/testRouteQuery.js
+tests/testRouteQueryFull.js
+tests/testSearchTiming.js
+.vercel

@@ -1,0 +1,27 @@
+import { Routes, Route } from 'react-router-dom'
+import Layout from './components/Layout.jsx'
+import HomePage from './pages/HomePage.jsx'
+import SearchPage from './pages/SearchPage.jsx'
+import AnalysisPage from './pages/AnalysisPage.jsx'
+import ContributionPage from './pages/ContributionPage.jsx'
+import GrowthPage from './pages/GrowthPage.jsx'
+import ProfilePage from './pages/ProfilePage.jsx'
+import ExplorePage from './pages/ExplorePage.jsx'
+import SocialPage from './pages/SocialPage.jsx'
+
+export default function App() {
+  return (
+    <Routes>
+      <Route element={<Layout />}>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/search" element={<SearchPage />} />
+        <Route path="/analysis" element={<AnalysisPage />} />
+        <Route path="/contribute" element={<ContributionPage />} />
+        <Route path="/growth" element={<GrowthPage />} />
+        <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/explore" element={<ExplorePage />} />
+        <Route path="/social" element={<SocialPage />} />
+      </Route>
+    </Routes>
+  )
+}
