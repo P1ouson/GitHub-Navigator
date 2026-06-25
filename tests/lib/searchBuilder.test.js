@@ -2,7 +2,7 @@
  * searchBuilder 单元测试
  *
  * 覆盖：
- *   - tagRepoItem / tagIssueItem / tagCodeItem 打标
+ *   - tagRepoItem 打标
  *   - buildRankedSections 构建 + 空数组删除
  *   - prepareIssueList 过滤 + 排序
  *   - prepareRepoList 过滤 + 重排
@@ -11,7 +11,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import {
-  tagRepoItem, tagIssueItem, tagCodeItem,
+  tagRepoItem,
   buildRankedSections, prepareIssueList, prepareRepoList, mergeSectionSlice,
 } from '../../src/lib/search/searchBuilder.js'
 
@@ -36,35 +36,6 @@ describe('tagRepoItem', () => {
   it('空对象不崩', () => {
     const tagged = tagRepoItem({})
     expect(tagged._type).toBe('repo')
-    expect(tagged._source).toBe('github_api')
-  })
-})
-
-describe('tagIssueItem', () => {
-  it('给 issue item 打上 _type=issue', () => {
-    const issue = { title: 'bug', labels: [] }
-    const tagged = tagIssueItem(issue)
-    expect(tagged._type).toBe('issue')
-    expect(tagged._source).toBe('github_api')
-    expect(tagged.title).toBe('bug')
-  })
-
-  it('labels 为空数组时不崩', () => {
-    const tagged = tagIssueItem({ labels: [] })
-    expect(tagged._type).toBe('issue')
-  })
-
-  it('labels 为 undefined 时不崩', () => {
-    const tagged = tagIssueItem({ labels: undefined })
-    expect(tagged._type).toBe('issue')
-  })
-})
-
-describe('tagCodeItem', () => {
-  it('给 code item 打上 _type=code', () => {
-    const code = { name: 'index.js', path: 'src/index.js' }
-    const tagged = tagCodeItem(code)
-    expect(tagged._type).toBe('code')
     expect(tagged._source).toBe('github_api')
   })
 })

@@ -50,26 +50,3 @@ export function usePersistState(pageId, key, defaultValue) {
 
   return [value, setValue]
 }
-
-// ===== 兼容旧 API =====
-
-export function savePageState(pageId, data) {
-  try {
-    sessionStorage.setItem(PREFIX + pageId, JSON.stringify(data))
-  } catch { /* 存储满或不可用，静默 */ }
-}
-
-export function loadPageState(pageId) {
-  try {
-    const raw = sessionStorage.getItem(PREFIX + pageId)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
-
-export function clearPageState(pageId) {
-  try {
-    sessionStorage.removeItem(PREFIX + pageId)
-  } catch { /* 静默 */ }
-}

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { parseRepoUrl, getAnalysisData } from '../lib/github.js'
-import { calcAnalysisScores, assessLiveness } from '../lib/repoHealth.js'
+import { calcAnalysisScores, assessRepoLiveness } from '../lib/repoHealth.js'
 import { enhance } from '../lib/llm.js'
 import { usePersistState } from '../lib/pageCache.js'
 
@@ -37,7 +37,7 @@ export default function AnalysisPage() {
       // 不套外层 safeGithub — 让 getAnalysisData 内部的真实错误（404 / timeout）直接传到 catch
       const data = await getAnalysisData(owner, repo)
 
-      const liveness = assessLiveness(data)
+      const liveness = assessRepoLiveness(data)
       const scores = calcAnalysisScores(data)
       const recommendations = buildRecommendations(data, liveness, scores)
 

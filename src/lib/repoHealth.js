@@ -19,7 +19,7 @@
  *   level: '活跃'|'维护中'|'低活跃'|'疑似废弃'|'未知'
  *   basis: 判断依据（说明用了哪个时间）
  */
-export function assessLiveness(data) {
+export function assessRepoLiveness(data) {
   const candidates = [
     { key: 'daysSinceCommunity', days: data.daysSinceCommunity, label: '社区活动' },
     { key: 'daysSinceUpdated', days: data.daysSinceUpdated, label: '仓库更新' },

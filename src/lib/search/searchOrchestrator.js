@@ -63,7 +63,7 @@ import { RepoFetcher } from '../searchFetcher.js'
 import { detectLanguages } from '../languages.js'
 import { friendlyError } from '../errors.js'
 import {
-  tagRepoItem, tagIssueItem, tagCodeItem,
+  tagRepoItem,
   buildRankedSections, prepareIssueList, prepareRepoList, mergeSectionSlice,
 } from './searchBuilder.js'
 import { INITIAL_SEARCH_STATE } from './searchState.js'

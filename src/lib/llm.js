@@ -21,18 +21,13 @@ const FULL_LLM_MODEL = 'Qwen/Qwen3-8B'
 const DEFAULT_API_KEY = 'sk-huzesdqsfacrwehmnoaaezatkcqzrcvdckwwqujjgqethywx'
 
 let llmProvider = null
-let llmEnabled = true
 
 export function setLLMProvider(provider) {
   llmProvider = provider
 }
 
-export function setLLMEnabled(enabled) {
-  llmEnabled = enabled
-}
-
 export function isLLMAvailable() {
-  return llmEnabled && llmProvider !== null
+  return llmProvider !== null
 }
 
 /**
@@ -89,6 +84,88 @@ export async function chat(systemPrompt, userMessage) {
   }
 }
 
+/**
+ * 内部统一的 chat 请求（收口 4 份重复的 fetch 样板）
+ * @param {object} opts
+ * @param {string} opts.apiKey
+ * @param {string} opts.model
+ * @param {string} opts.systemPrompt
+ * @param {string} opts.userMessage
+ * @param {number} [opts.maxTokens=1024]
+ * @param {number} [opts.timeout=15000] 超时 ms
+ * @param {boolean} [opts.stream=false] 是否流式
+ * @param {(chunk: string) => void} [opts.onChunk] 流式回调
+ * @returns {Promise<string>} 完整内容（流式时为拼接结果，非流式时为 message.content）
+ */
+async function _chat({ apiKey, model, systemPrompt, userMessage, maxTokens = 1024, timeout = 15000, stream = false, onChunk }) {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+  try {
+    const resp = await fetch(`${SILICONFLOW_BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage },
+        ],
+        max_tokens: maxTokens,
+        temperature: 0.3,
+        ...(stream ? { stream: true } : {}),
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+    if (!resp.ok) {
+      const err = await resp.text()
+      throw new Error(`LLM API 错误 (${resp.status}): ${err.slice(0, 200)}`)
+    }
+
+    if (!stream) {
+      const data = await resp.json()
+      return data.choices[0].message.content
+    }
+
+    // 流式：逐 chunk 回调
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let fullContent = ''
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+        const jsonStr = trimmed.slice(6).trim()
+        if (jsonStr === '[DONE]') break
+        try {
+          const parsed = JSON.parse(jsonStr)
+          const content = parsed.choices?.[0]?.delta?.content || ''
+          if (content) {
+            fullContent += content
+            onChunk?.(content)
+          }
+        } catch {
+          // 跳过格式异常的行
+        }
+      }
+    }
+    return fullContent
+  } catch (e) {
+    clearTimeout(timeoutId)
+    if (e.name === 'AbortError') throw new Error(`LLM 请求超时（${timeout / 1000}s）`)
+    throw e
+  }
+}
+
 /** 创建 SiliconFlow 适配器（OpenAI 兼容格式） */
 export function createSiliconFlowAdapter({ apiKey, model }) {
   return {
@@ -128,73 +205,11 @@ export function createSiliconFlowAdapter({ apiKey, model }) {
         userContent = JSON.stringify(ctx, null, 2)
       }
 
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 15000)
-      try {
-        const resp = await fetch(`${SILICONFLOW_BASE}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userContent },
-            ],
-            max_tokens: 1024,
-            temperature: 0.3,
-          }),
-          signal: controller.signal,
-        })
-        clearTimeout(timeoutId)
-        if (!resp.ok) {
-          const err = await resp.text()
-          throw new Error(`LLM API 错误 (${resp.status}): ${err}`)
-        }
-        const data = await resp.json()
-        return data.choices[0].message.content
-      } catch (e) {
-        clearTimeout(timeoutId)
-        if (e.name === 'AbortError') throw new Error('LLM 请求超时（15s）')
-        throw e
-      }
+      return _chat({ apiKey, model, systemPrompt, userMessage: userContent, maxTokens: 1024, timeout: 15000 })
     },
 
     async chat(systemPrompt, userMessage) {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 15000)
-      try {
-        const resp = await fetch(`${SILICONFLOW_BASE}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userMessage },
-            ],
-            max_tokens: 256,
-            temperature: 0.3,
-          }),
-          signal: controller.signal,
-        })
-        clearTimeout(timeoutId)
-        if (!resp.ok) {
-          const err = await resp.text()
-          throw new Error(`LLM API 错误 (${resp.status}): ${err}`)
-        }
-        const data = await resp.json()
-        return data.choices[0].message.content
-      } catch (e) {
-        clearTimeout(timeoutId)
-        if (e.name === 'AbortError') throw new Error('LLM 请求超时（15s）')
-        throw e
-      }
+      return _chat({ apiKey, model, systemPrompt, userMessage, maxTokens: 256, timeout: 15000 })
     },
   }
 }
@@ -210,69 +225,7 @@ export function createSiliconFlowAdapter({ apiKey, model }) {
 export async function chatStream(systemPrompt, userMessage, onChunk, maxTokens = 1024) {
   if (!isLLMAvailable()) return null
   const apiKey = await getSetting('siliconflow_api_key') || DEFAULT_API_KEY
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 30000)
-  try {
-  const resp = await fetch(`${SILICONFLOW_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: DEFAULT_LLM_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.3,
-      stream: true,
-    }),
-    signal: controller.signal,
-  })
-  clearTimeout(timeoutId)
-  if (!resp.ok) {
-    const err = await resp.text()
-    throw new Error(`LLM 流式 API 错误 (${resp.status}): ${err}`)
-  }
-  const reader = resp.body.getReader()
-  const decoder = new TextDecoder()
-  let fullContent = ''
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed.startsWith('data: ')) continue
-      const jsonStr = trimmed.slice(6).trim()
-      if (jsonStr === '[DONE]') break
-      try {
-        const parsed = JSON.parse(jsonStr)
-        const content = parsed.choices?.[0]?.delta?.content || ''
-        if (content) {
-          fullContent += content
-          onChunk?.(content)
-        }
-      } catch {
-        // 跳过格式异常的行
-      }
-    }
-  }
-  return fullContent
-  } catch (e) {
-    clearTimeout(timeoutId)
-    if (e.name === 'AbortError') throw new Error('LLM 流式请求超时（30s）')
-    throw e
-  }
-}
-export function createOpenAIAdapter({ baseURL, apiKey, model }) {
-  // baseURL 不适用 — SiliconFlow 固定地址，忽略自定义 baseURL
-  return createSiliconFlowAdapter({ apiKey, model: model || DEFAULT_LLM_MODEL })
+  return _chat({ apiKey, model: DEFAULT_LLM_MODEL, systemPrompt, userMessage, maxTokens, timeout: 30000, stream: true, onChunk })
 }
 
 /**
@@ -446,28 +399,7 @@ function parseIntentResult(result, query) {
  */
 async function chatWithModel(systemPrompt, userMessage, model, maxTokens) {
   const apiKey = await getSetting('siliconflow_api_key') || DEFAULT_API_KEY
-  const resp = await fetch(`${SILICONFLOW_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.3,
-    }),
-  })
-  if (!resp.ok) {
-    const err = await resp.text()
-    throw new Error(`LLM API 错误 (${resp.status}): ${err.slice(0, 100)}`)
-  }
-  const data = await resp.json()
-  return data.choices[0].message.content
+  return _chat({ apiKey, model, systemPrompt, userMessage, maxTokens, timeout: 15000 })
 }
 
 /**

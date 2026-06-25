@@ -11,7 +11,7 @@
  *   - assessLiveness archived → level='疑似废弃', status='bad'
  */
 import { describe, it, expect } from 'vitest'
-import { calcAnalysisScores, assessLiveness } from '../../src/lib/repoHealth.js'
+import { calcAnalysisScores, assessRepoLiveness } from '../../src/lib/repoHealth.js'
 
 /* ===== 测试数据工厂 ===== */
 
@@ -159,7 +159,7 @@ describe('assessLiveness - 四维度取最新', () => {
       daysSincePush: 20,
       daysSinceLastCommit: 30,
     }
-    const l = assessLiveness(data)
+    const l = assessRepoLiveness(data)
     expect(l.days).toBe(5)
     expect(l.basis).toBe('社区活动')
   })
@@ -171,31 +171,31 @@ describe('assessLiveness - 四维度取最新', () => {
       daysSincePush: null,
       daysSinceLastCommit: 3,
     }
-    const l = assessLiveness(data)
+    const l = assessRepoLiveness(data)
     expect(l.days).toBe(3)
     expect(l.basis).toBe('Commit')
   })
 
   it('days <= 30 → level=活跃, status=good', () => {
-    const l = assessLiveness({ daysSinceLastCommit: 10 })
+    const l = assessRepoLiveness({ daysSinceLastCommit: 10 })
     expect(l.level).toBe('活跃')
     expect(l.status).toBe('good')
   })
 
   it('30 < days <= 180 → level=维护中, status=warn', () => {
-    const l = assessLiveness({ daysSinceLastCommit: 90 })
+    const l = assessRepoLiveness({ daysSinceLastCommit: 90 })
     expect(l.level).toBe('维护中')
     expect(l.status).toBe('warn')
   })
 
   it('180 < days <= 365 → level=低活跃, status=warn', () => {
-    const l = assessLiveness({ daysSinceLastCommit: 200 })
+    const l = assessRepoLiveness({ daysSinceLastCommit: 200 })
     expect(l.level).toBe('低活跃')
     expect(l.status).toBe('warn')
   })
 
   it('days > 365 → level=疑似废弃, status=bad', () => {
-    const l = assessLiveness({ daysSinceLastCommit: 400 })
+    const l = assessRepoLiveness({ daysSinceLastCommit: 400 })
     expect(l.level).toBe('疑似废弃')
     expect(l.status).toBe('bad')
   })
@@ -203,7 +203,7 @@ describe('assessLiveness - 四维度取最新', () => {
 
 describe('assessLiveness - 边界情况', () => {
   it('无任何时间数据 → level=未知, status=warn', () => {
-    const l = assessLiveness({})
+    const l = assessRepoLiveness({})
     expect(l.level).toBe('未知')
     expect(l.status).toBe('warn')
     expect(l.days).toBeNull()
@@ -211,7 +211,7 @@ describe('assessLiveness - 边界情况', () => {
   })
 
   it('所有维度为 null → level=未知', () => {
-    const l = assessLiveness({
+    const l = assessRepoLiveness({
       daysSinceCommunity: null,
       daysSinceUpdated: null,
       daysSincePush: null,

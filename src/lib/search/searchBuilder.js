@@ -6,7 +6,7 @@
  * │                                                                      │
  * │ 本层负责：                                                           │
  * │   - 把 orchestrator 返回的原始数据变成 SearchPage 可渲染的结构        │
- * │   - 给 item 打 _type / _source 标记（repo/issue/code）                │
+ *   - 给 repo item 打 _type / _source 标记（issue/code 在各 loader 内联打标）│
  * │   - 构建 rankedSections（主渲染源）                                   │
  * │   - 合并 load more 结果到 section                                     │
  * │   - 过滤政治敏感内容（isRepoBlocked / isRepoNameBlocked）             │
@@ -19,7 +19,7 @@
  * │   - 直接访问缓存层                                                    │
  * │                                                                      │
  * │ 输入契约：                                                            │
- * │   - tagXxxItem(item): 原始 repo/issue/code 对象                       │
+ * │   - tagRepoItem(item): 原始 repo 对象                                 │
  * │   - buildRankedSections(rawResults, query, intent): 多源原始结果      │
  * │   - prepareIssueList(issues, prefLang): issue 数组                    │
  * │   - prepareRepoList(repos, query): repo 数组                          │
@@ -43,24 +43,6 @@ import { isRepoBlocked, isRepoNameBlocked } from '../contentFilter.js'
  */
 export function tagRepoItem(repo) {
   return { ...repo, _type: 'repo', _source: 'github_api' }
-}
-
-/**
- * 给 issue item 打标
- * @param {object} issue
- * @returns {object}
- */
-export function tagIssueItem(issue) {
-  return { ...issue, _type: 'issue', _source: 'github_api' }
-}
-
-/**
- * 给 code item 打标
- * @param {object} code
- * @returns {object}
- */
-export function tagCodeItem(code) {
-  return { ...code, _type: 'code', _source: 'github_api' }
 }
 
 /**
