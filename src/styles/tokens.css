@@ -1870,7 +1870,7 @@ a {
 
 .search-sidebar {
   position:fixed;
-  left:calc((100vw - 1100px)/2 - 240px);
+  left:max(16px, calc((100vw - 1100px)/2 - 240px));
   top:80px;
   width:220px;
   max-height:calc(100vh - 100px);
@@ -1889,7 +1889,7 @@ a {
 .search-sidebar::-webkit-scrollbar-track {
   background:transparent}
 
-@media (max-width: 1600px) {
+@media (max-width: 1400px) {
   .search-sidebar {
   position:static;
   left:auto;
