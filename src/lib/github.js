@@ -18,7 +18,7 @@ let currentConfig = { token: '', proxy: '', timeout: 20000 }
 
 /**
  * 获取 baseUrl
- * 统一走 /api/gh：开发环境 Vite proxy → 本地 Clash，生产环境 Cloudflare Pages Functions → api.github.com
+ * 统一走 /api/gh：开发环境 Vite proxy → 本地 Clash，生产环境 Vercel edge rewrite → api.github.com
  * 用户可在设置中覆盖为自定义代理（如 ghproxy.com 等 CORS 代理）
  */
 function resolveBaseUrl(proxy) {

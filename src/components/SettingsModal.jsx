@@ -83,14 +83,14 @@ export default function SettingsModal({ open, onClose }) {
           <div className="setting-field">
             <label className="setting-label">
               API 代理地址
-              <span className="setting-hint">留空即可：开发环境走本地 Clash，生产环境（Cloudflare Pages）自动走边缘函数转发到 GitHub。网络异常时可手动填第三方 CORS 代理</span>
+              <span className="setting-hint">留空即可：开发环境走本地 Clash，生产环境（Vercel）自动走 edge 转发到 GitHub。网络异常时可手动填第三方 CORS 代理</span>
             </label>
             <input
               className="setting-input"
               type="text"
               value={proxy}
               onChange={e => setProxy(e.target.value)}
-              placeholder="留空 = 自动（Clash / Cloudflare 边缘函数）"
+              placeholder="留空 = 自动（Clash / Vercel edge）"
             />
             <div className="setting-proxy-hints">
               <span className="setting-proxy-label">快捷：</span>
