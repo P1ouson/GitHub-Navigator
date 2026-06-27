@@ -57,20 +57,19 @@ export default function SearchPage() {
   const {
     rankedSections, results, intent, activeTab, ragAnswer,
     state, setActiveTab,
-    search: doSearch, labelSearch: doLabelSearch, loadMore, fetchMoreForFilter, resetLabelFilter, preloadIfNeeded,
+    search: doSearch, loadMore, fetchMoreForFilter, fetchMoreForIssueFilter, preloadIfNeeded,
     issueItems, repoItems, lockedLanguages, getTotalCount, hasMore,
   } = search
 
   // ===== 纯 UI 筛选状态（留页面）=====
   const [issueLabelFilter, setIssueLabelFilter] = usePersistState('search', 'issueLabelFilter', () => new Set())
-  const [languageFilter, setLanguageFilter] = usePersistState('search', 'languageFilter', () => new Set())
+  const [issueLanguageFilter, setIssueLanguageFilter] = usePersistState('search', 'issueLanguageFilter', () => new Set())
+  const [repoLanguageFilter, setRepoLanguageFilter] = usePersistState('search', 'repoLanguageFilter', () => new Set())
   const [topicFilter, setTopicFilter] = usePersistState('search', 'topicFilter', () => new Set())
   const [difficultyFilter, setDifficultyFilter] = usePersistState('search', 'difficultyFilter', () => new Set())
   const [showAllLangs, setShowAllLangs] = usePersistState('search', 'showAllLangs', false)
   const [issuePage, setIssuePage] = usePersistState('search', 'issuePage', 1)
   const [repoPage, setRepoPage] = usePersistState('search', 'repoPage', 1)
-  // 筛选栏快照：label 重搜时 pool 被清空，用快照保持筛选栏内容不消失
-  const [filterSnapshot, setFilterSnapshot] = useState(null)
   // 当前选中的搜索类型（!repo/!issue/!code/!qa），独立于输入框内容
   // 选中态只控制按钮高亮 + 提交时自动拼接，不写入输入框
   const [selectedType, setSelectedType] = useState(null)
@@ -110,7 +109,8 @@ export default function SearchPage() {
       setSelectedType(bang)
       setQuery(rest)
       // 新搜索时重置筛选状态，避免持久化的旧筛选条件过滤掉新结果
-      setLanguageFilter(new Set())
+      setIssueLanguageFilter(new Set())
+      setRepoLanguageFilter(new Set())
       setTopicFilter(new Set())
       setIssueLabelFilter(new Set())
       setDifficultyFilter(new Set())
@@ -133,13 +133,15 @@ export default function SearchPage() {
   // 统一翻页
   const handlePageChange = useCallback(async (newPage) => {
     if (newPage < 1 || state.status === 'loading_more') return
+    const totalP = Math.max(1, Math.ceil(poolTotal / pageSize))
+    if (newPage > totalP) return
     const cfg = configRef.current
     const isIssue = activeTab === 'issue'
     if (isIssue) setIssuePage(newPage)
     else setRepoPage(newPage)
     await loadMore(activeTab, newPage, cfg)
     window.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [activeTab, state.status, loadMore])
+  }, [activeTab, state.status, loadMore, poolTotal, pageSize])
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -203,19 +205,6 @@ export default function SearchPage() {
     return diffs
   }, [issueItems, issueItems.length])
 
-  // 保存筛选栏快照（label 重搜时 pool 被清空，用快照保持内容不消失）
-  useEffect(() => {
-    if (issueItems.length > 0 && state.status !== 'label_search') {
-      setFilterSnapshot({ beginnerLabels, otherLabels, issueLanguages, issueDifficulties })
-    }
-  }, [issueItems.length, state.status, beginnerLabels, otherLabels, issueLanguages, issueDifficulties])
-
-  const snap = state.status === 'label_search' ? filterSnapshot : null
-  const displayBeginnerLabels = snap ? snap.beginnerLabels : beginnerLabels
-  const displayOtherLabels = snap ? snap.otherLabels : otherLabels
-  const displayIssueLanguages = snap ? snap.issueLanguages : issueLanguages
-  const displayIssueDifficulties = snap ? snap.issueDifficulties : issueDifficulties
-
   const repoLanguages = useMemo(() => aggregateLanguages(repoItems, 'repo'), [repoItems, repoItems.length])
   const repoTopics = useMemo(() => aggregateTopics(repoItems), [repoItems, repoItems.length])
 
@@ -224,27 +213,27 @@ export default function SearchPage() {
     if (issueLabelFilter.size > 0) {
       if (!issue.labels || !issue.labels.some(l => issueLabelFilter.has((l.name || '').toLowerCase()))) return false
     }
-    if (languageFilter.size > 0) {
+    if (issueLanguageFilter.size > 0) {
       if (!issue._repoHealth) return true
       const lang = issue._repoHealth.language
-      if (!lang || !languageFilter.has(lang)) return false
+      if (!lang || !issueLanguageFilter.has(lang)) return false
     }
     if (difficultyFilter.size > 0) {
       if (!difficultyFilter.has(issueDifficulty(issue))) return false
     }
     return true
-  }), [issueItems, issueItems.length, issueLabelFilter, languageFilter, difficultyFilter])
+  }), [issueItems, issueItems.length, issueLabelFilter, issueLanguageFilter, difficultyFilter])
 
   const filteredRepoItems = useMemo(() => repoItems.filter(repo => {
-    if (languageFilter.size > 0) {
-      if (!repo.language || !languageFilter.has(repo.language)) return false
+    if (repoLanguageFilter.size > 0) {
+      if (!repo.language || !repoLanguageFilter.has(repo.language)) return false
     }
     if (topicFilter.size > 0) {
       const topics = repo.topics || []
       if (!topics.some(t => topicFilter.has(t))) return false
     }
     return true
-  }), [repoItems, repoItems.length, languageFilter, topicFilter])
+  }), [repoItems, repoItems.length, repoLanguageFilter, topicFilter])
 
   // repo 筛选自动加载：筛选后结果不足 pageSize 时循环拉更多，直到够数或 hasMore 耗尽
   useEffect(() => {
@@ -252,7 +241,7 @@ export default function SearchPage() {
     if (filterLoadingRef.current) return
     if (state.status !== 'idle') return
     // 只在有筛选条件时才自动补数据（无筛选时首屏已够）
-    if (languageFilter.size === 0 && topicFilter.size === 0) return
+    if (repoLanguageFilter.size === 0 && topicFilter.size === 0) return
     // 筛选后结果已够一页，不再拉
     if (filteredRepoItems.length >= pageSize) return
     // 没有更多数据可拉，停止
@@ -262,7 +251,23 @@ export default function SearchPage() {
     fetchMoreForFilter(configRef.current).finally(() => {
       filterLoadingRef.current = false
     })
-  }, [activeTab, state.status, filteredRepoItems.length, languageFilter, topicFilter, pageSize, hasMore, fetchMoreForFilter])
+  }, [activeTab, state.status, filteredRepoItems.length, repoLanguageFilter, topicFilter, pageSize, hasMore, fetchMoreForFilter])
+
+  // issue 筛选自动加载：筛选后结果不足 pageSize 时循环拉更多
+  const issueFilterLoadingRef = useRef(false)
+  useEffect(() => {
+    if (activeTab !== 'issue') return
+    if (issueFilterLoadingRef.current) return
+    if (state.status !== 'idle') return
+    if (issueLanguageFilter.size === 0 && issueLabelFilter.size === 0 && difficultyFilter.size === 0) return
+    if (filteredIssueItems.length >= pageSize) return
+    if (!hasMore('issue')) return
+
+    issueFilterLoadingRef.current = true
+    fetchMoreForIssueFilter(configRef.current).finally(() => {
+      issueFilterLoadingRef.current = false
+    })
+  }, [activeTab, state.status, filteredIssueItems.length, issueLanguageFilter, issueLabelFilter, difficultyFilter, pageSize, hasMore, fetchMoreForIssueFilter])
 
   // ===== 渲染派生 =====
   const currentTabItems = rankedSections && activeTab ? rankedSections[activeTab] : null
@@ -277,11 +282,18 @@ export default function SearchPage() {
   const showTotalCount = state.status === 'idle' && totalCount > 0
   const currentPage = activeTab === 'issue' ? issuePage : activeTab === 'repo' ? repoPage : 1
 
+  // 筛选后 pool 缩小时，若 currentPage 超出 totalPages 则重置为 1
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      if (activeTab === 'issue') setIssuePage(1)
+      else if (activeTab === 'repo') setRepoPage(1)
+    }
+  }, [currentPage, totalPages, activeTab])
+
   // ===== loading 文案映射 =====
   const isLoading = state.status === 'searching'
   const loadingHint = state.status === 'searching' ? state.hint : ''
   const isLoadingMore = state.status === 'loading_more'
-  const isLabelSearch = state.status === 'label_search'
   const isRepoFilter = state.status === 'repo_filter'
   const isExpanding = state.status === 'expanding'
   const exhausted = !hasMore(activeTab)
@@ -380,7 +392,6 @@ export default function SearchPage() {
         {isLoading && <div className="search-status">搜索中...</div>}
         {!isLoading && loadingHint && <div className="search-status search-status-sub">{loadingHint}</div>}
         {isLoadingMore && <div className="search-status search-status-sub">正在加载更多...</div>}
-        {isLabelSearch && <div className="search-status search-status-sub">筛选标签中...</div>}
         {isRepoFilter && <div className="search-status search-status-sub">结果筛选中...</div>}
         {isExpanding && <div className="search-status search-status-sub">结果较少，正在扩大搜索范围...</div>}
         {state.error && <div className="search-status error">{state.error}</div>}
@@ -475,23 +486,22 @@ export default function SearchPage() {
         )}
 
         {/* 主体布局（筛选时不隐藏，保持旧结果可见 + 顶部提示加载中）*/}
-        {!isLoading && rankedSections && activeTab && ['issue', 'repo'].includes(activeTab) && (issueItems.length > 0 || repoItems.length > 0 || isLabelSearch) && (
+        {!isLoading && rankedSections && activeTab && ['issue', 'repo'].includes(activeTab) && (issueItems.length > 0 || repoItems.length > 0) && (
           <div className="search-layout">
             <aside className="search-sidebar">
-              {activeTab === 'issue' && (issueItems.length > 0 || isLabelSearch) && (
+              {activeTab === 'issue' && issueItems.length > 0 && (
                 <FilterPanel
                   type="issue"
                   onClearAll={() => {
                     setIssueLabelFilter(new Set())
-                    setLanguageFilter(new Set(lockedLanguages))
+                    setIssueLanguageFilter(new Set(lockedLanguages))
                     setDifficultyFilter(new Set())
                     setIssuePage(1)
-                    resetLabelFilter(configRef.current)
                   }}
                   sections={[
                     {
                       title: '难度',
-                      items: displayIssueDifficulties.filter(d => d.count > 0).map(d => ({ key: d.key, name: d.label })),
+                      items: issueDifficulties.filter(d => d.count > 0).map(d => ({ key: d.key, name: d.label })),
                       selected: difficultyFilter,
                       onToggle: (key) => {
                         setDifficultyFilter(prev => {
@@ -505,11 +515,11 @@ export default function SearchPage() {
                     },
                     {
                       title: '语言',
-                      items: displayIssueLanguages.map(l => ({ key: l.name, name: l.name })),
-                      selected: languageFilter,
+                      items: issueLanguages.map(l => ({ key: l.name, name: l.name })),
+                      selected: issueLanguageFilter,
                       onToggle: (key) => {
-                        if (lockedLanguages.has(key) && languageFilter.has(key)) return
-                        setLanguageFilter(prev => {
+                        if (lockedLanguages.has(key) && issueLanguageFilter.has(key)) return
+                        setIssueLanguageFilter(prev => {
                           const next = new Set(prev)
                           if (next.has(key)) next.delete(key)
                           else next.add(key)
@@ -522,39 +532,29 @@ export default function SearchPage() {
                       onToggleShowAll: () => setShowAllLangs(v => !v),
                       lockedKeys: lockedLanguages,
                     },
-                    displayBeginnerLabels.length > 0 ? {
+                    beginnerLabels.length > 0 ? {
                       title: '新手友好标签',
-                      items: displayBeginnerLabels.map(l => ({ key: l.name.toLowerCase(), name: l.name, color: l.color })),
+                      items: beginnerLabels.map(l => ({ key: l.name.toLowerCase(), name: l.name, color: l.color })),
                       selected: issueLabelFilter,
                       onToggle: (key) => {
                         setIssueLabelFilter(prev => {
                           const next = new Set(prev)
                           if (next.has(key)) next.delete(key)
                           else next.add(key)
-                          if (next.size > 0) {
-                            doLabelSearch(next, configRef.current)
-                          } else {
-                            resetLabelFilter(configRef.current)
-                          }
                           return next
                         })
                         setIssuePage(1)
                       },
                     } : null,
-                    displayOtherLabels.length > 0 ? {
+                    otherLabels.length > 0 ? {
                       title: '其他标签',
-                      items: displayOtherLabels.map(l => ({ key: l.name.toLowerCase(), name: l.name, color: l.color })),
+                      items: otherLabels.map(l => ({ key: l.name.toLowerCase(), name: l.name, color: l.color })),
                       selected: issueLabelFilter,
                       onToggle: (key) => {
                         setIssueLabelFilter(prev => {
                           const next = new Set(prev)
                           if (next.has(key)) next.delete(key)
                           else next.add(key)
-                          if (next.size > 0) {
-                            doLabelSearch(next, configRef.current)
-                          } else {
-                            resetLabelFilter(configRef.current)
-                          }
                           return next
                         })
                         setIssuePage(1)
@@ -567,7 +567,7 @@ export default function SearchPage() {
                 <FilterPanel
                   type="repo"
                   onClearAll={() => {
-                    setLanguageFilter(new Set(lockedLanguages))
+                    setRepoLanguageFilter(new Set(lockedLanguages))
                     setTopicFilter(new Set())
                     setRepoPage(1)
                   }}
@@ -575,10 +575,10 @@ export default function SearchPage() {
                     {
                       title: '语言',
                       items: repoLanguages.map(l => ({ key: l.name, name: l.name })),
-                      selected: languageFilter,
+                      selected: repoLanguageFilter,
                       onToggle: (key) => {
-                        if (lockedLanguages.has(key) && languageFilter.has(key)) return
-                        setLanguageFilter(prev => {
+                        if (lockedLanguages.has(key) && repoLanguageFilter.has(key)) return
+                        setRepoLanguageFilter(prev => {
                           const next = new Set(prev)
                           if (next.has(key)) next.delete(key)
                           else next.add(key)
@@ -640,7 +640,7 @@ export default function SearchPage() {
               第 {currentPage} / {totalPages} 页 · 已加载 {poolTotal} 条
               {isLoadingMore ? ' · 加载中...' : exhausted ? '' : ' · 翻页可继续加载'}
             </span>
-            <button className="pagination-btn" disabled={isLoading || isLoadingMore || (currentPage * pageSize >= poolTotal && exhausted)} onClick={() => handlePageChange(currentPage + 1)}>
+            <button className="pagination-btn" disabled={isLoading || isLoadingMore || currentPage >= totalPages || (currentPage * pageSize >= poolTotal && exhausted)} onClick={() => handlePageChange(currentPage + 1)}>
               下一页
             </button>
           </div>

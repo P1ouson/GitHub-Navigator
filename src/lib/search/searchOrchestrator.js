@@ -560,6 +560,19 @@ export class SearchOrchestrator {
     }
   }
 
+  /**
+   * issue 筛选自动补数据（与 fetchMoreForFilter 对应，用于 issue 筛选后不足一页时）
+   */
+  async fetchMoreForIssueFilter(config, cb) {
+    const fetcher = this.issueFetcher
+    if (!fetcher.hasMore || fetcher.items.length === 0) return
+    try {
+      await fetcher.fetchMore(3)
+    } catch {
+      // 静默
+    }
+  }
+
   /* ===== Label 清除恢复 ===== */
 
   /**

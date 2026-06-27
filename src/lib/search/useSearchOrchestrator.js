@@ -84,8 +84,8 @@ export function useSearchOrchestrator() {
     return orch.fetchMoreForFilter(config, cb)
   }, [orch, cb])
 
-  const resetLabelFilter = useCallback((config) => {
-    return orch.resetLabelFilter(config, cb)
+  const fetchMoreForIssueFilter = useCallback((config) => {
+    return orch.fetchMoreForIssueFilter(config, cb)
   }, [orch, cb])
 
   const preloadIfNeeded = useCallback((tab, currentPage, config) => {
@@ -97,7 +97,6 @@ export function useSearchOrchestrator() {
   const repoItems = orch.repoItems
   const issueStats = orch.issueStats
   const lockedLanguages = orch.lockedLanguages
-  const originalIssue = orch.originalIssue
 
   return {
     // 主渲染源
@@ -110,10 +109,9 @@ export function useSearchOrchestrator() {
     state,
     // 操作
     search,
-    labelSearch,
     loadMore,
     fetchMoreForFilter,
-    resetLabelFilter,
+    fetchMoreForIssueFilter,
     preloadIfNeeded,
     setActiveTab,
     setRankedSections,
@@ -122,7 +120,6 @@ export function useSearchOrchestrator() {
     repoItems,
     issueStats,
     lockedLanguages,
-    originalIssue,
     getTotalCount: (tab) => orch.getTotalCount(tab),
     hasMore: (tab) => orch.hasMore(tab),
   }
