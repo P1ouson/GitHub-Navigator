@@ -130,19 +130,6 @@ export default function SearchPage() {
 
   // repo 筛选自动加载（移至 filteredRepoItems 定义之后，依赖筛选后实际结果数）
 
-  // 统一翻页
-  const handlePageChange = useCallback(async (newPage) => {
-    if (newPage < 1 || state.status === 'loading_more') return
-    const totalP = Math.max(1, Math.ceil(poolTotal / pageSize))
-    if (newPage > totalP) return
-    const cfg = configRef.current
-    const isIssue = activeTab === 'issue'
-    if (isIssue) setIssuePage(newPage)
-    else setRepoPage(newPage)
-    await loadMore(activeTab, newPage, cfg)
-    window.scrollTo({ top: 0, behavior: 'smooth' })
-  }, [activeTab, state.status, loadMore, poolTotal, pageSize])
-
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!query.trim()) return
@@ -253,22 +240,6 @@ export default function SearchPage() {
     })
   }, [activeTab, state.status, filteredRepoItems.length, repoLanguageFilter, topicFilter, pageSize, hasMore, fetchMoreForFilter])
 
-  // issue 筛选自动加载：筛选后结果不足 pageSize 时循环拉更多
-  const issueFilterLoadingRef = useRef(false)
-  useEffect(() => {
-    if (activeTab !== 'issue') return
-    if (issueFilterLoadingRef.current) return
-    if (state.status !== 'idle') return
-    if (issueLanguageFilter.size === 0 && issueLabelFilter.size === 0 && difficultyFilter.size === 0) return
-    if (filteredIssueItems.length >= pageSize) return
-    if (!hasMore('issue')) return
-
-    issueFilterLoadingRef.current = true
-    fetchMoreForIssueFilter(configRef.current).finally(() => {
-      issueFilterLoadingRef.current = false
-    })
-  }, [activeTab, state.status, filteredIssueItems.length, issueLanguageFilter, issueLabelFilter, difficultyFilter, pageSize, hasMore, fetchMoreForIssueFilter])
-
   // ===== 渲染派生 =====
   const currentTabItems = rankedSections && activeTab ? rankedSections[activeTab] : null
   const currentFilteredItems = activeTab === 'issue' ? filteredIssueItems
@@ -289,6 +260,35 @@ export default function SearchPage() {
       else if (activeTab === 'repo') setRepoPage(1)
     }
   }, [currentPage, totalPages, activeTab])
+
+  // 统一翻页
+  const handlePageChange = useCallback(async (newPage) => {
+    if (newPage < 1 || state.status === 'loading_more') return
+    const totalP = Math.max(1, Math.ceil(poolTotal / pageSize))
+    if (newPage > totalP) return
+    const cfg = configRef.current
+    const isIssue = activeTab === 'issue'
+    if (isIssue) setIssuePage(newPage)
+    else setRepoPage(newPage)
+    await loadMore(activeTab, newPage, cfg)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [activeTab, state.status, loadMore, poolTotal, pageSize])
+
+  // issue 筛选自动加载：筛选后结果不足 pageSize 时循环拉更多
+  const issueFilterLoadingRef = useRef(false)
+  useEffect(() => {
+    if (activeTab !== 'issue') return
+    if (issueFilterLoadingRef.current) return
+    if (state.status !== 'idle') return
+    if (issueLanguageFilter.size === 0 && issueLabelFilter.size === 0 && difficultyFilter.size === 0) return
+    if (filteredIssueItems.length >= pageSize) return
+    if (!hasMore('issue')) return
+
+    issueFilterLoadingRef.current = true
+    fetchMoreForIssueFilter(configRef.current).finally(() => {
+      issueFilterLoadingRef.current = false
+    })
+  }, [activeTab, state.status, filteredIssueItems.length, issueLanguageFilter, issueLabelFilter, difficultyFilter, pageSize, hasMore, fetchMoreForIssueFilter])
 
   // ===== loading 文案映射 =====
   const isLoading = state.status === 'searching'
