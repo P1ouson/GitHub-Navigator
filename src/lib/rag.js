@@ -178,7 +178,7 @@ ${context}`
  * @param {(chunk: string) => void} onChunk 每收到一段文本就回调
  * @returns {Promise<{answer: string, sources: Array}>}
  */
-export async function askRAGStream(query, onChunk) {
+export async function askRAGStream(query, onChunk, maxTokens = 512) {
   // 1. 向量检索
   let results = []
   try {
@@ -221,7 +221,7 @@ ${context}`
     fullAnswer = (await chatStream(systemPrompt, query, (chunk) => {
       fullAnswer += chunk
       onChunk?.(fullAnswer)
-    }, 1024)) || ''
+    }, maxTokens)) || ''
   } catch (err) {
     console.warn('[RAG] 流式问答失败:', err.message)
   }

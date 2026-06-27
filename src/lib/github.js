@@ -39,6 +39,8 @@ export function initGitHub(opts = {}) {
     baseUrl,
     request: { timeout: currentConfig.timeout },
   })
+  // Token 更新后重置 401 警告标记
+  resetTokenWarning()
   return octokitInstance
 }
 
@@ -71,6 +73,12 @@ export async function testConnection() {
     await octokit.rest.rateLimit.get()
     return Date.now() - start
   } catch (e) {
+    if (e?.status === 401) {
+      throw new Error('Token 无效，请重新生成 GitHub Token')
+    }
+    if (e?.message?.includes('Bad credentials')) {
+      throw new Error('Token 无效，请重新生成 GitHub Token')
+    }
     throw new Error(e.message || '连接失败')
   }
 }
@@ -92,15 +100,26 @@ export function parseGithubRepoCoordinates(url) {
 
 /** safeGithub：带超时的 GitHub API 调用包装（与 Octokit timeout 对齐为 20s） */
 const SAFE_TIMEOUT = 20000
+let _badTokenWarned = false
 export async function safeGithub(fn, fallback = null) {
   try {
     return await Promise.race([
       typeof fn === 'function' ? fn() : fn,
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), SAFE_TIMEOUT)),
     ])
-  } catch {
+  } catch (e) {
+    // 401 表示 Token 无效，只警告一次，避免刷屏
+    if (e?.status === 401 && !_badTokenWarned) {
+      _badTokenWarned = true
+      console.warn('[GitHub] Token 无效（401 Bad credentials），请在设置中更新 Token')
+    }
     return fallback
   }
+}
+
+/** 重置 Token 警告标记（Token 更新后调用） */
+export function resetTokenWarning() {
+  _badTokenWarned = false
 }
 
 /** 搜索指定组织/用户的仓库 */
@@ -285,9 +304,9 @@ export async function getAnalysisData(owner, repo) {
 
   // 并发：所有 API 调用均通过 safeGithub 保护
   const [
-    infoR, lastCommitR, gfiR, hwR, openIssueR, prR, openPrR,
+    infoR, lastCommitR, gfiR, hwR, prR, openPrR,
     contributorsR, releasesR, contributingR, readmeR, langR, communityR, commitsR,
-    branchR, releaseCountR, recentIssuesR, recentPrR,
+    branchR, recentIssuesR,
   ] = await Promise.allSettled([
     // repos.get 是必须的 — 不套 safeGithub，让真实错误（404 / timeout）能传到 allSettled.reason
     Promise.race([
@@ -295,18 +314,10 @@ export async function getAnalysisData(owner, repo) {
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 30000)),
     ]),
     safeGithub(octokit.rest.repos.listCommits({ owner, repo, per_page: 1 })),
-    safeGithub(octokit.rest.search.issuesAndPullRequests({
-      q: `repo:${owner}/${repo} is:issue is:open label:"good first issue"`,
-      per_page: 1,
-    })),
-    safeGithub(octokit.rest.search.issuesAndPullRequests({
-      q: `repo:${owner}/${repo} is:issue is:open label:"help wanted"`,
-      per_page: 1,
-    })),
-    safeGithub(octokit.rest.search.issuesAndPullRequests({
-      q: `repo:${owner}/${repo} is:issue is:open`,
-      per_page: 1,
-    })),
+    // good first issue: 用 REST API 替代 Search API（更快，不占 Search 配额）
+    safeGithub(octokit.rest.issues.listForRepo({ owner, repo, labels: 'good first issue', state: 'open', per_page: 100 })),
+    // help wanted: 同上
+    safeGithub(octokit.rest.issues.listForRepo({ owner, repo, labels: 'help wanted', state: 'open', per_page: 100 })),
     safeGithub(octokit.rest.pulls.list({ owner, repo, state: 'closed', sort: 'updated', direction: 'desc', per_page: 30 })),
     safeGithub(octokit.rest.pulls.list({ owner, repo, state: 'open', per_page: 1 })),
     safeGithub(octokit.rest.repos.listContributors({ owner, repo, per_page: 1 })),
@@ -317,9 +328,7 @@ export async function getAnalysisData(owner, repo) {
     safeGithub(octokit.rest.repos.getCommunityProfileMetrics({ owner, repo })),
     safeGithub(getCommitActivity(owner, repo, 30)),
     safeGithub(octokit.rest.repos.listBranches({ owner, repo, per_page: 1 })),
-    safeGithub(octokit.rest.search.repos({ q: `repo:${owner}/${repo}`, per_page: 1 })),
     safeGithub(octokit.rest.issues.listForRepo({ owner, repo, state: 'closed', sort: 'updated', direction: 'desc', per_page: 30 })),
-    safeGithub(octokit.rest.pulls.list({ owner, repo, state: 'closed', sort: 'updated', direction: 'desc', per_page: 30 })),
   ])
 
   // repos.get 是必须的 — 失败则无法继续分析
@@ -361,8 +370,8 @@ export async function getAnalysisData(owner, repo) {
       if (i.updated_at) communityCandidates.push(i.updated_at)
     })
   }
-  if (recentPrR.status === 'fulfilled' && recentPrR.value?.data?.length) {
-    recentPrR.value.data.forEach(pr => {
+  if (prR.status === 'fulfilled' && prR.value?.data?.length) {
+    prR.value.data.forEach(pr => {
       if (pr.updated_at) communityCandidates.push(pr.updated_at)
     })
   }
@@ -406,14 +415,8 @@ export async function getAnalysisData(owner, repo) {
     openPRCount = lastMatch ? parseInt(lastMatch[1]) : openPrR.value.data.length
   }
 
-  // 真实 open issue 数（不含 PR）
-  let trueOpenIssueCount = null
-  if (openIssueR.status === 'fulfilled') {
-    trueOpenIssueCount = openIssueR.value?.data?.total_count ?? null
-  }
-  if (trueOpenIssueCount === null && openPRCount !== null) {
-    trueOpenIssueCount = Math.max(0, data.open_issues_count - openPRCount)
-  }
+  // 真实 open issue 数（不含 PR）：repos.get 返回 open_issues_count 含 PR，减去 openPRCount
+  let trueOpenIssueCount = Math.max(0, data.open_issues_count - openPRCount)
 
   // contributors 数（从 link header 提取）
   let contributorCount = 0
@@ -447,8 +450,8 @@ export async function getAnalysisData(owner, repo) {
   }
 
   let prProcessDays = null
-  if (recentPrR.status === 'fulfilled' && recentPrR.value?.data?.length) {
-    const merged = recentPrR.value.data.filter(pr => pr.merged_at)
+  if (prR.status === 'fulfilled' && prR.value?.data?.length) {
+    const merged = prR.value.data.filter(pr => pr.merged_at)
     if (merged.length) {
       const days = merged.map(pr =>
         (new Date(pr.merged_at) - new Date(pr.created_at)) / (24 * 60 * 60 * 1000)
@@ -521,8 +524,8 @@ export async function getAnalysisData(owner, repo) {
     lastUpdatedAt,
     lastCommunityAt,
     repoAgeDays,
-    gfiCount: gfiR.status === 'fulfilled' ? (gfiR.value?.data?.total_count || 0) : 0,
-    helpWantedCount: hwR.status === 'fulfilled' ? (hwR.value?.data?.total_count || 0) : 0,
+    gfiCount: gfiR.status === 'fulfilled' ? (Array.isArray(gfiR.value?.data) ? gfiR.value.data.length : 0) : 0,
+    helpWantedCount: hwR.status === 'fulfilled' ? (Array.isArray(hwR.value?.data) ? hwR.value.data.length : 0) : 0,
     hasContributing: contributingR.status === 'fulfilled',
     hasReadme: readmeR.status === 'fulfilled',
     prDays: prProcessDays !== null ? prProcessDays : prDays,
@@ -658,4 +661,22 @@ export async function getGlobalStats() {
   }
   GLOBAL_STATS_CACHE.set('stats', { data, _ts: Date.now() })
   return data
+}
+
+/* ===== README 翻译 ===== */
+
+/** 获取仓库 README 原始内容（自动检测 README 文件名） */
+export async function fetchReadmeContent(owner, repo) {
+  const octokit = getOctokit()
+  try {
+    const { data } = await octokit.rest.repos.getReadme({ owner, repo })
+    // content 是 base64 编码
+    const content = atob(data.content.replace(/\n/g, ''))
+    return { content, name: data.name, size: data.size }
+  } catch (err) {
+    if (err.status === 404) {
+      throw new Error('该仓库没有 README 文件')
+    }
+    throw err
+  }
 }

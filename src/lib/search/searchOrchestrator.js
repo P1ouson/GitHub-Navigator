@@ -256,10 +256,12 @@ export class SearchOrchestrator {
           if (isLLMAvailable() && (ruleIntent === 'qa' || kbMatches.length > 0)) {
             cb.onRagLoading(true)
             cb.onRagAnswer(null)
+            // 动态 token：KB 命中多时用更多 token 保证回答质量，少时用小 token 加速
+            const ragTokens = kbMatches.length > 3 ? 512 : 256
             askRAGStream(cleanQuery, (partialAnswer) => {
               if (gen !== this._gen) return
               cb.onRagAnswer(prev => prev ? { ...prev, answer: partialAnswer } : { answer: partialAnswer, sources: [] })
-            })
+            }, ragTokens)
               .then(res => { if (gen === this._gen) cb.onRagAnswer(res) })
               .catch(err => console.warn('[RAG] 问答失败:', err.message))
               .finally(() => { if (gen === this._gen) cb.onRagLoading(false) })
@@ -271,14 +273,13 @@ export class SearchOrchestrator {
           ['repo', 'issue', 'code'].includes(s) && config.sources[s]?.enabled
         ))]
         const ghTasks = []
-        let issueTask = null
 
         for (const source of ghSources) {
           const sourceQuery = effectivePlan.query_by_source[source] || cleanQuery
 
           if (source === 'issue') {
             this._baseQuery = sourceQuery
-            issueTask = async () => {
+            ghTasks.push(async () => {
               const fetcher = this.issueFetcher
               const issueOpts = {
                 query: sourceQuery,
@@ -313,8 +314,7 @@ export class SearchOrchestrator {
               this._totalCount.issue = fetcher.totalCount || 0
               const sorted = prepareIssueList(fetcher.issues, prefLang)
               rawResults.issue = sorted
-            }
-            ghTasks.push(issueTask)
+            })
           } else if (source === 'repo') {
             ghTasks.push(async () => {
               try {
@@ -366,10 +366,9 @@ export class SearchOrchestrator {
             .catch(() => {})
         }
 
-        // 快速任务先出结果（repo/code）
-        const fastTasks = ghTasks.filter(t => t !== issueTask)
-        if (fastTasks.length) {
-          await Promise.all(fastTasks.map(t => t()))
+        // 所有 GitHub 任务并行执行（repo/code/issue 同时启动）
+        if (ghTasks.length) {
+          await Promise.all(ghTasks.map(t => t()))
           if (gen !== this._gen) return
         }
 
@@ -382,11 +381,8 @@ export class SearchOrchestrator {
           if (firstTab) cb.onActiveTab(firstTab)
         }
 
-        // Issue 任务（Phase 1 快速入池）
-        if (issueTask) {
-          cb.onState({ status: 'searching', hint: 'Issue 筛选中...', error: null })
-          await issueTask()
-          if (gen !== this._gen) return
+        // Issue 结果已通过并行 + onEnriched 回调入池，此处做收尾补全
+        if (this.issueFetcher.issues.length > 0 && !rawResults.issue) {
           const sorted = prepareIssueList(this.issueFetcher.issues, prefLang)
           const issueSlice = sorted.slice(0, pageSize)
           this._totalCount.issue = this.issueFetcher.totalCount || 0
@@ -715,25 +711,28 @@ export class SearchOrchestrator {
    * 返回 { ...result, _usedTier } 或 null
    */
   async _runLLMRouting(cleanQuery, gen, cb) {
-    // L2: embedding
+    // L2 + L3 并行竞速，谁先返回用谁
     let result = null
     try {
-      result = await matchIntentByEmbedding(cleanQuery)
-      if (result) result._usedTier = 'L2'
+      const [l2, l3] = await Promise.allSettled([
+        matchIntentByEmbedding(cleanQuery),
+        analyzeIntentLight(cleanQuery),
+      ])
+      if (gen !== this._gen) return null
+
+      // L2 优先（embedding 匹配更快更准）
+      if (l2.status === 'fulfilled' && l2.value) {
+        l2.value._usedTier = 'L2'
+        return l2.value
+      }
+      if (l3.status === 'fulfilled' && l3.value) {
+        l3.value._usedTier = 'L3'
+        return l3.value
+      }
     } catch { /* 静默降级 */ }
     if (gen !== this._gen) return null
-    if (result) return result
 
-    // L3: 轻量模型
-    cb.onState({ status: 'searching', hint: 'AI 轻量分析中...', error: null })
-    try {
-      result = await analyzeIntentLight(cleanQuery)
-      if (result) result._usedTier = 'L3'
-    } catch { /* 静默降级 */ }
-    if (gen !== this._gen) return null
-    if (result) return result
-
-    // L4: 全量模型
+    // L4: 全量模型兜底
     cb.onState({ status: 'searching', hint: 'AI 深度分析中...', error: null })
     try {
       result = await analyzeIntent(cleanQuery)

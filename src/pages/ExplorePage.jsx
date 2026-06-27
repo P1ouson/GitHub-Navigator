@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { searchRepositories } from '../lib/github.js'
-import { chat } from '../lib/llm.js'
+import { chatStream } from '../lib/llm.js'
 import { usePersistState } from '../lib/pageCache.js'
 
 // 随机语言池
@@ -41,45 +41,84 @@ export default function ExplorePage() {
   const [aiDesc, setAiDesc] = usePersistState('explore', 'aiDesc', '')
   const [aiLoading, setAiLoading] = useState(false)
   const [tag, setTag] = usePersistState('explore', 'tag', '')
+  const [error, setError] = useState('')
 
   const fetchRandom = useCallback(async () => {
     setLoading(true)
-    setRepo(null)
-    setAiDesc('')
     setAiLoading(false)
+    setError('')
+    // 不立即清空 repo — 保留上一个结果直到新结果就绪
 
     try {
-      const lang = pickRandom(LANG_POOL)
-      const topic = Math.random() > 0.5 ? pickRandom(TOPIC_POOL) : ''
-      const range = randomStarRange()
-      const sort = Math.random() > 0.5 ? 'stars' : 'updated'
-      const page = Math.floor(Math.random() * 3) + 1 // 随机翻页，避免总是同样的结果
+      let result, range, lang, topic, sort, page
 
-      const result = await searchRepositories(topic || lang, {
-        language: lang,
-        minStars: range.min,
-        maxStars: range.max,
-        sort,
-        fetchSize: 20,
-      }, page)
+      // 重试最多 3 次，每次换不同参数
+      for (let attempt = 0; attempt < 3; attempt++) {
+        lang = pickRandom(LANG_POOL)
+        topic = Math.random() > 0.5 ? pickRandom(TOPIC_POOL) : ''
+        range = randomStarRange()
+        sort = Math.random() > 0.5 ? 'stars' : 'updated'
+        page = Math.floor(Math.random() * 3) + 1
 
-      if (!result.items?.length) {
-        // 没结果，换个语言再试
-        return fetchRandom()
+        try {
+          result = await searchRepositories(topic || lang, {
+            language: lang,
+            minStars: range.min,
+            maxStars: range.max,
+            sort,
+            fetchSize: 20,
+          }, page)
+        } catch (e) {
+          // 区分不同错误类型
+          if (e?.status === 403 || e?.message?.includes('rate limit') || e?.message?.includes('secondary rate limit')) {
+            setError('GitHub 搜索 API 限流，请稍等一分钟再试')
+            setLoading(false)
+            return
+          }
+          if (e?.status === 401) {
+            setError('GitHub Token 无效，请在设置中更新 Token')
+            setLoading(false)
+            return
+          }
+          if (e?.message?.includes('timeout') || e?.message?.includes('超时')) {
+            setError('搜索超时，请检查网络后重试')
+            setLoading(false)
+            return
+          }
+          // 其他错误：继续重试
+          console.warn('[漫游] 第', attempt + 1, '次尝试失败:', e.message)
+          continue
+        }
+
+        if (result?.items?.length) break
+      }
+
+      if (!result?.items?.length) {
+        setError('随机漫步没有找到结果，再点一次试试')
+        setLoading(false)
+        return
       }
 
       const pick = pickRandom(result.items)
       setRepo(pick)
       setTag(range.label)
+      setAiDesc('')
+      setLoading(false)
 
-      // AI 生成一句话介绍
+      // AI 生成一句话介绍（流式）
       setAiLoading(true)
       try {
-        const desc = await chat(
+        let desc = ''
+        await chatStream(
           '你是一个开源项目推荐官。用一句话（不超过40字）介绍这个仓库，语言像朋友推荐一样自然，不要用"这个项目是..."开头。',
-          `仓库名：${pick.name}\n描述：${pick.desc || '无'}\n语言：${pick.language || '未知'}\nStar：${pick.stars}\n话题：${(pick.topics || []).join(', ')}`
+          `仓库名：${pick.name}\n描述：${pick.desc || '无'}\n语言：${pick.language || '未知'}\nStar：${pick.stars}\n话题：${(pick.topics || []).join(', ')}`,
+          (chunk) => {
+            desc += chunk
+            setAiDesc(desc)
+          },
+          128
         )
-        if (desc) setAiDesc(desc)
+        if (!desc) setAiDesc(pick.desc || '')
       } catch {
         setAiDesc(pick.desc || '')
       } finally {
@@ -87,9 +126,7 @@ export default function ExplorePage() {
       }
     } catch (err) {
       console.warn('[漫游] 获取失败:', err.message)
-      // 静默重试
-      setTimeout(() => fetchRandom(), 1000)
-    } finally {
+      setError(`漫游失败：${err.message}`)
       setLoading(false)
     }
   }, [])
@@ -105,7 +142,14 @@ export default function ExplorePage() {
         </div>
 
         <div className="explore-card-wrap">
-          {!repo && !loading && (
+          {error && (
+            <div className="explore-error">
+              <p>{error}</p>
+              <button className="explore-btn" onClick={fetchRandom}>重试</button>
+            </div>
+          )}
+
+          {!repo && !loading && !error && (
             <div className="explore-empty">
               <div className="explore-empty-icon">🗺️</div>
               <p>点一下按钮，随机探索一个 GitHub 仓库</p>

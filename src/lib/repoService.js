@@ -27,7 +27,6 @@ import {
 } from './repoCache.js'
 import {
   normalizeRepoEntryFromREST,
-  normalizeRepoEntryFromGraphQL,
   normalizeRepoSummaryFromCache,
 } from './githubSchema.js'
 
@@ -56,7 +55,8 @@ export async function getRepoEntry(owner, repo) {
 }
 
 /**
- * GraphQL 批量获取仓库健康信息（Layer A 缓存优先）
+ * REST 批量获取仓库健康信息（Layer A 缓存优先）
+ * 使用 REST API 并行请求替代 GraphQL，避免 GraphQL 超时，提升可靠性
  * @param {string[]} repos - ["owner/repo", ...]
  * @returns {Promise<{ map: Map<string, RepoCacheEntry>, stats: { cacheHits: number } }>}
  */
@@ -78,45 +78,20 @@ export async function batchGetRepoEntries(repos) {
 
   if (!toFetch.length) return { map: results, stats: { cacheHits } }
 
-  const octokit = getOctokit()
-  // 批次大小 25，降低单次 GraphQL 查询复杂度，减少超时概率
-  const BATCH = 25
-
-  for (let i = 0; i < toFetch.length; i += BATCH) {
-    const batch = toFetch.slice(i, i + BATCH)
-    try {
-      const aliases = batch.map((r, j) => {
-        const [o, n] = r.split('/')
-        return `r${j}: repository(owner:"${o}", name:"${n}") { pushedAt isArchived stargazerCount primaryLanguage { name } forkCount issues(states: [OPEN]) { totalCount } description url updatedAt repositoryTopics(first: 5) { nodes { topic { name } } } }`
-      }).join(' ')
-      const query = `query { ${aliases} }`
-      const reposRes = await octokit.graphql(query)
-      batch.forEach((repo, j) => {
-        const info = reposRes[`r${j}`]
-        if (info) {
-          const entry = normalizeRepoEntryFromGraphQL(info, repo)
-          setRepoCacheEntry(repo, entry)
-          results.set(repo, entry)
-        }
-      })
-    } catch {
-      // GraphQL 失败 → REST 降级（限并发 8 路）
-      const fallback = await mapConcurrent(
-        batch,
-        async (repo) => {
-          const [o, n] = repo.split('/')
-          if (!o || !n) return null
-          const info = await safeGithub(() => getRepoEntry(o, n), null)
-          return info ? { repo, entry: info } : null
-        },
-        8
-      )
-      for (const r of fallback) {
-        if (r.status !== 'fulfilled' || !r.value) continue
-        results.set(r.value.repo, r.value.entry)
-      }
-      // REST 也失败的 repo 不入 map，上层当 unknown 处理
-    }
+  // REST 并行 8 路，分组批量请求
+  const fetched = await mapConcurrent(
+    toFetch,
+    async (repo) => {
+      const [o, n] = repo.split('/')
+      if (!o || !n) return null
+      const info = await safeGithub(() => getRepoEntry(o, n), null)
+      return info ? { repo, entry: info } : null
+    },
+    8
+  )
+  for (const r of fetched) {
+    if (r.status !== 'fulfilled' || !r.value) continue
+    results.set(r.value.repo, r.value.entry)
   }
 
   return { map: results, stats: { cacheHits } }

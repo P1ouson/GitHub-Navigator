@@ -8,6 +8,7 @@ export default function SettingsModal({ open, onClose }) {
   const [proxy, setProxy] = useState('')
   const [timeout, setTimeout_] = useState(15000)
   const [llmApiKey, setLlmApiKey] = useState('')
+  const [zhipuApiKey, setZhipuApiKey] = useState('')
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
   const [saved, setSaved] = useState(false)
@@ -19,6 +20,7 @@ export default function SettingsModal({ open, onClose }) {
       setProxy(cfg.proxy)
       setTimeout_(cfg.timeout)
       getSetting('siliconflow_api_key', '').then(setLlmApiKey)
+      getSetting('zhipu_api_key', '').then(setZhipuApiKey)
       setTestResult(null)
       setSaved(false)
     }
@@ -29,6 +31,7 @@ export default function SettingsModal({ open, onClose }) {
     await setSetting('github_proxy', proxy.trim())
     await setSetting('github_timeout', Number(timeout))
     await setSetting('siliconflow_api_key', llmApiKey.trim())
+    await setSetting('zhipu_api_key', zhipuApiKey.trim())
     initGitHub({ token: token.trim(), proxy: proxy.trim(), timeout: Number(timeout) })
     updateLLMConfig({ apiKey: llmApiKey.trim() })
     setSaved(true)
@@ -130,6 +133,24 @@ export default function SettingsModal({ open, onClose }) {
             />
             <a className="setting-link" href="https://cloud.siliconflow.cn/account/ak" target="_blank" rel="noreferrer">
               → 去获取自己的 API Key（免费）
+            </a>
+          </div>
+
+          {/* 智谱 API Key（可选，用于 AI 图像生成） */}
+          <div className="setting-field">
+            <label className="setting-label">
+              智谱 AI API Key（可选）
+              <span className="setting-hint">用于 AI 图像生成（开源漫游封面、项目概念图）。前往 open.bigmodel.cn 免费注册获取</span>
+            </label>
+            <input
+              className="setting-input"
+              type="password"
+              value={zhipuApiKey}
+              onChange={e => setZhipuApiKey(e.target.value)}
+              placeholder="留空 = 不启用图像生成"
+            />
+            <a className="setting-link" href="https://open.bigmodel.cn/usercenter/apikeys" target="_blank" rel="noreferrer">
+              → 去获取智谱 API Key（免费）
             </a>
           </div>
 

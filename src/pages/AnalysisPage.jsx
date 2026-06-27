@@ -1,7 +1,7 @@
-import { useState } from 'react'
-import { parseRepoUrl, getAnalysisData } from '../lib/github.js'
+import { useState, useRef } from 'react'
+import { parseRepoUrl, getAnalysisData, fetchReadmeContent } from '../lib/github.js'
 import { calcAnalysisScores, assessRepoLiveness } from '../lib/repoHealth.js'
-import { enhance } from '../lib/llm.js'
+import { chatStream } from '../lib/llm.js'
 import { usePersistState } from '../lib/pageCache.js'
 
 export default function AnalysisPage() {
@@ -12,6 +12,21 @@ export default function AnalysisPage() {
   const [urlHint, setUrlHint] = useState('')
   const [llmSummary, setLlmSummary] = usePersistState('analysis', 'llmSummary', '')
   const [llmLoading, setLlmLoading] = useState(false)
+  const [activeTab, setActiveTab] = usePersistState('analysis', 'activeTab', 'analysis')
+
+  // README 翻译状态
+  const [readmeRaw, setReadmeRaw] = usePersistState('analysis', 'readmeRaw', '')
+  const [readmeName, setReadmeName] = usePersistState('analysis', 'readmeName', '')
+  const [translated, setTranslated] = usePersistState('analysis', 'translated', '')
+  const [transLoading, setTransLoading] = useState(false)
+  const [transProgress, setTransProgress] = useState('')
+  const [readmeError, setReadmeError] = useState('')
+
+  // 交互问答状态
+  const [qaMessages, setQaMessages] = usePersistState('analysis', 'qaMessages', [])
+  const [qaInput, setQaInput] = useState('')
+  const [qaLoading, setQaLoading] = useState(false)
+  const qaEndRef = useRef(null)
 
   async function analyze() {
     if (!url.trim()) return
@@ -34,7 +49,6 @@ export default function AnalysisPage() {
 
     try {
       const { owner, repo } = parsed
-      // 不套外层 safeGithub — 让 getAnalysisData 内部的真实错误（404 / timeout）直接传到 catch
       const data = await getAnalysisData(owner, repo)
 
       const liveness = assessRepoLiveness(data)
@@ -42,6 +56,10 @@ export default function AnalysisPage() {
       const recommendations = buildRecommendations(data, liveness, scores)
 
       setReport({ ...data, liveness, scores, recommendations })
+
+      // 分析完成后，同步启动 README 翻译 + LLM 画像（后台并行）
+      translateReadme(owner, repo)
+      generateLLMSummaryStream({ ...data, liveness, scores, recommendations })
     } catch (e) {
       const msg = e.message?.includes('rate limit')
         ? 'GitHub API 限流（未认证 60/h）。请在设置（⚙）中填入 GitHub Token 提升到 5000/h'
@@ -52,22 +70,170 @@ export default function AnalysisPage() {
     }
   }
 
-  async function generateLLMSummary() {
-    if (!report) return
+  /** LLM 项目画像 — 流式输出，自然语言描述 */
+  async function generateLLMSummaryStream(reportData) {
     setLlmLoading(true)
     setLlmSummary('')
-    const result = await enhance('analysis.summary', { report })
-    if (result) {
-      setLlmSummary(result)
+
+    const { info, liveness, scores, recommendations } = reportData
+    const ctx = {
+      '仓库名': info.fullName || info.name || '未知',
+      '描述': info.desc || '无',
+      '主语言': info.language || '未知',
+      Stars: info.stars || 0,
+      Forks: info.forks || 0,
+      Watchers: info.watchers || 0,
+      Open_Issues: info.openIssues || 0,
+      '协议': info.license || '无',
+      '默认分支': info.defaultBranch || 'main',
+      '是否存在Fork': info.isFork ? '是' : '否',
+      '是否已归档': info.archived ? '是' : '否',
+      '话题标签': (info.topics || []).join('、'),
+      '活跃度等级': liveness.level || 'unknown',
+      '活跃度依据': liveness.basis || '未知',
+      '最后活动': liveness.days != null ? `${liveness.days}天前` : '未知',
+      '健康度总分': `${scores.total || 0}/100`,
+      '各项评分': `活跃度${scores.activity || 0}/20、贡献者${scores.contributors || 0}/15、新手友好${scores.beginner || 0}/20、维护质量${scores.maintenance || 0}/20、文档${scores.docs || 0}/15、生态${scores.ecosystem || 0}/10`,
+      '关键问题': (recommendations || []).slice(0, 5).map(r => r.title).join('、'),
+      '贡献者数量': reportData.contributorCount || 0,
+      '30天提交数': reportData.commits30d || 0,
+      'PR中位处理': reportData.prDays != null ? `${reportData.prDays}天` : '无数据',
+      'PR合并率': reportData.prMergeRate != null ? `${reportData.prMergeRate}%` : '无数据',
+      'Issue中位关闭': reportData.issueCloseDays != null ? `${reportData.issueCloseDays}天` : '无数据',
+      'Good_First_Issue数': reportData.gfiCount || 0,
+      'Help_Wanted数': reportData.helpWantedCount || 0,
+      '是否有README': reportData.hasReadme ? '有' : '无',
+      '是否有CONTRIBUTING': reportData.hasContributing ? '有' : '无',
+      '是否有Release': reportData.hasReleases ? '有' : '无',
+      '仓库年龄': reportData.repoAgeDays != null ? `${Math.floor(reportData.repoAgeDays / 365)}年` : '未知',
     }
-    else setLlmSummary('LLM 不可用，请稍后重试')
+
+    const systemPrompt = `你是一个亲切的开源项目评估专家。请根据以下仓库数据，写一段详细的中文项目画像，可以使用 Markdown 格式（加粗、列表、表格等）来增强可读性。
+
+要求：
+- 像一个懂技术的朋友在跟你聊天，口语化但专业
+- 先介绍这个项目是干什么的（1-2句）
+- 然后评价它的**健康状态**：说说活跃度怎么样、维护质量如何、社区是否健康
+- 再评价它的**新手友好度**：有没有 Good First Issue、文档是否完善、适不适合第一次贡献
+- 接着说说**风险和注意事项**：有没有 License、是否归档、PR 处理是否及时
+- 最后给一段**总结建议**：这个项目值不值得关注、适不适合投入时间贡献
+- 不要用表格，用自然段落
+- 每段之间用空行分隔
+- 语言像朋友聊天，不要官方腔`
+
+    const userMsg = JSON.stringify(ctx, null, 2)
+
+    let content = ''
+    await chatStream(systemPrompt, userMsg, (chunk) => {
+      content += chunk
+      setLlmSummary(content)
+    }, 1024)
+
+    if (!content) {
+      setLlmSummary('LLM 不可用，请稍后重试')
+    }
     setLlmLoading(false)
+  }
+
+  /** 翻译 README — 分块并行，流式输出，简单直白解释 */
+  async function translateReadme(ownerOverride, repoOverride) {
+    const parsed = ownerOverride && repoOverride
+      ? { owner: ownerOverride, repo: repoOverride }
+      : parseRepoUrl(url)
+
+    if (!parsed) {
+      setReadmeError('无法解析仓库地址')
+      return
+    }
+
+    setTransLoading(true)
+    setReadmeError('')
+    setTranslated('')
+    setReadmeRaw('')
+    setQaMessages([])
+
+    try {
+      const { owner, repo } = parsed
+      setTransProgress('正在获取 README...')
+      const { content, name } = await fetchReadmeContent(owner, repo)
+      setReadmeRaw(content)
+      setReadmeName(name)
+
+      const chunks = splitMarkdownChunks(content, 3000)
+      setTransProgress(`正在并行解释 ${chunks.length} 个片段...`)
+
+      const systemPrompt = `你是一个技术文档翻译官。请用最简单直白的中文解释以下 README 内容，让完全不懂技术的人也能看懂。
+要求：
+1. 保留所有 Markdown 格式（标题、代码块、链接、表格、列表）
+2. 代码块和命令保持原样不翻译
+3. 链接 URL 保持原样，链接文字翻译成中文
+4. 技术术语用通俗说法解释，比如 "dependency" 说成 "依赖包"，"API" 说成 "接口"
+5. 不要逐字翻译，用你自己的话把意思说清楚
+6. 安装步骤要解释每一步在干什么，不只是翻译命令
+7. 只输出结果，不要加任何解释说明`
+
+      // 并行翻译所有分块
+      const chunkResults = new Array(chunks.length).fill(null)
+      const chunkStreaming = new Array(chunks.length).fill('')
+
+      const assembleDisplay = () => chunkResults.map((r, j) => {
+        if (r !== null) return r
+        return chunkStreaming[j] || '⏳'
+      }).join('\n\n')
+
+      await Promise.all(chunks.map((chunk, i) => (async () => {
+        let content = ''
+        await chatStream(systemPrompt, chunk, (c) => {
+          content += c
+          chunkStreaming[i] = content
+          setTranslated(assembleDisplay())
+        }, 2048)
+        chunkResults[i] = content || chunk
+        setTranslated(assembleDisplay())
+      })()))
+
+      setTransProgress('')
+    } catch (e) {
+      setReadmeError(e.message || '翻译失败')
+    } finally {
+      setTransLoading(false)
+    }
+  }
+
+  /** 交互问答 — 流式输出 */
+  async function sendQuestion() {
+    const q = qaInput.trim()
+    if (!q || !readmeRaw || qaLoading) return
+    setQaInput('')
+    const newMsgs = [...qaMessages, { role: 'user', content: q }]
+    setQaMessages(newMsgs)
+    setQaLoading(true)
+
+    const context = readmeRaw.slice(0, 6000)
+    let reply = ''
+    setQaMessages([...newMsgs, { role: 'assistant', content: '' }])
+
+    await chatStream(
+      `你是一个开源项目助手。根据以下 README 内容回答用户问题。用中文回答，简洁明了。\n\nREADME 内容：\n${context}`,
+      q,
+      (chunk) => {
+        reply += chunk
+        setQaMessages([...newMsgs, { role: 'assistant', content: reply }])
+      },
+      512
+    )
+
+    if (!reply) {
+      setQaMessages([...newMsgs, { role: 'assistant', content: '抱歉，暂时无法回答。' }])
+    }
+    setQaLoading(false)
+    setTimeout(() => qaEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
   }
 
   return (
     <section className="section analysis-section-wide">
       <div className="section-inner section-inner-wide">
-        {/* 描述区移到搜索框上方 */}
+        {/* 描述区 */}
         <div className="analysis-intro">
           <div className="section-label">模块二</div>
           <h2>仓库分析中心</h2>
@@ -83,175 +249,299 @@ export default function AnalysisPage() {
             className="search-box-input"
             value={url}
             onChange={e => setUrl(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && analyze()}
+            onKeyDown={e => e.key === 'Enter' && (activeTab === 'translate' ? translateReadme() : analyze())}
             placeholder="owner/repo 或 https://github.com/owner/repo"
           />
-          <button className="search-box-btn" onClick={analyze} disabled={loading}>
-            {loading ? '正在采集仓库数据' : '分析'}
+          <button className="search-box-btn" onClick={activeTab === 'translate' ? () => translateReadme() : analyze} disabled={loading || transLoading}>
+            {loading ? '正在采集仓库数据' : transLoading ? '翻译中...' : activeTab === 'translate' ? '翻译 README' : '分析'}
           </button>
         </div>
 
-        {!report && !loading && !error && (
-          <div className="analysis-empty">
-            {/* 分析维度说明区 */}
-            <div className="analysis-dimensions">
-              <div className="analysis-dimensions-title">分析会看哪些维度</div>
-              <div className="analysis-dimension-grid">
-                <div className="analysis-dimension-card-wrapper">
-                  <div className="analysis-dimension-card">
-                    <span className="analysis-dimension-icon">⚡</span>
-                    <div>
-                      <div className="analysis-dimension-name">活跃度</div>
-                      <div className="analysis-dimension-desc">Commit、Push、Issue、PR 的近期活动情况</div>
-                    </div>
-                  </div>
-                  <div className="dimension-tooltip">
-                    <div className="dimension-tooltip-title">详细说明</div>
-                    <div className="dimension-tooltip-body">分析仓库近期的 Commit 频率、Issue 响应速度、PR 处理效率。活跃的仓库通常有日均 ≥1 次 Commit，Issue 在 7 天内得到回复，PR 在 14 天内被合并或关闭。</div>
-                  </div>
-                </div>
-                <div className="analysis-dimension-card-wrapper">
-                  <div className="analysis-dimension-card">
-                    <span className="analysis-dimension-icon">🌱</span>
-                    <div>
-                      <div className="analysis-dimension-name">新手友好度</div>
-                      <div className="analysis-dimension-desc">Good First Issue、CONTRIBUTING、Issue 模板等</div>
-                    </div>
-                  </div>
-                  <div className="dimension-tooltip">
-                    <div className="dimension-tooltip-title">详细说明</div>
-                    <div className="dimension-tooltip-body">检查仓库是否有 Good First Issue 标签、CONTRIBUTING.md 文档、Issue/PR 模板。新手友好度高的仓库会降低贡献门槛，帮助初学者快速上手。</div>
-                  </div>
-                </div>
-                <div className="analysis-dimension-card-wrapper">
-                  <div className="analysis-dimension-card">
-                    <span className="analysis-dimension-icon">🔧</span>
-                    <div>
-                      <div className="analysis-dimension-name">维护质量</div>
-                      <div className="analysis-dimension-desc">PR 处理速度、Merge 率、Issue 关闭时间</div>
-                    </div>
-                  </div>
-                  <div className="dimension-tooltip">
-                    <div className="dimension-tooltip-title">详细说明</div>
-                    <div className="dimension-tooltip-body">评估 PR 的处理速度（中位数合并时间）、Merge 率（合并/关闭比例）、Issue 关闭率。高质量的仓库会在 7-14 天内处理 PR，Merge 率{'>'} 60%。</div>
-                  </div>
-                </div>
-                <div className="analysis-dimension-card-wrapper">
-                  <div className="analysis-dimension-card">
-                    <span className="analysis-dimension-icon">📚</span>
-                    <div>
-                      <div className="analysis-dimension-name">文档生态</div>
-                      <div className="analysis-dimension-desc">README、行为准则、Topics、License 等</div>
-                    </div>
-                  </div>
-                  <div className="dimension-tooltip">
-                    <div className="dimension-tooltip-title">详细说明</div>
-                    <div className="dimension-tooltip-body">检查 README 完整性、Code of Conduct 行为准则、Topics 标签、License 许可协议。文档完善的仓库更容易被理解和贡献。</div>
-                  </div>
-                </div>
-                <div className="analysis-dimension-card-wrapper">
-                  <div className="analysis-dimension-card">
-                    <span className="analysis-dimension-icon">🛡️</span>
-                    <div>
-                      <div className="analysis-dimension-name">风险评估</div>
-                      <div className="analysis-dimension-desc">归档、无协议、单贡献者、活跃度停滞等</div>
-                    </div>
-                  </div>
-                  <div className="dimension-tooltip">
-                    <div className="dimension-tooltip-title">详细说明</div>
-                    <div className="dimension-tooltip-body">综合评估仓库的 License 合规性、长期活跃趋势、安全风险（如依赖过时、未修复的安全 Issue）。帮助你判断是否值得投入时间贡献。</div>
-                  </div>
-                </div>
-              </div>
-            </div>
+        {/* Tab 切换 */}
+        <div className="readme-tabs">
+          <button className={`readme-tab ${activeTab === 'analysis' ? 'active' : ''}`} onClick={() => setActiveTab('analysis')}>
+            📊 健康分析
+          </button>
+          <button className={`readme-tab ${activeTab === 'translate' ? 'active' : ''}`} onClick={() => setActiveTab('translate')}>
+            🌐 README 翻译
+          </button>
+        </div>
 
-            {/* 交互式入口：3 个场景按钮 */}
-            <div className="analysis-scenarios">
-              <div className="analysis-scenarios-title">从哪里开始？</div>
-              <div className="analysis-scenario-grid">
-                <button
-                  className="analysis-scenario-btn"
-                  onClick={() => {
-                    const v = window.prompt('请输入你 Fork 过的仓库（owner/repo）')
-                    if (v) { setUrl(v); setTimeout(() => document.querySelector('.search-box-btn')?.click(), 50) }
-                  }}
-                >
-                  <span className="analysis-scenario-icon">🍴</span>
-                  <span className="analysis-scenario-name">分析我 Fork 过的仓库</span>
-                  <span className="analysis-scenario-hint">输入 owner/repo 即可</span>
-                </button>
-                <button
-                  className="analysis-scenario-btn"
-                  onClick={() => {
-                    const v = window.prompt('请输入你想贡献的仓库（owner/repo）')
-                    if (v) { setUrl(v); setTimeout(() => document.querySelector('.search-box-btn')?.click(), 50) }
-                  }}
-                >
-                  <span className="analysis-scenario-icon">💡</span>
-                  <span className="analysis-scenario-name">分析我想贡献的仓库</span>
-                  <span className="analysis-scenario-hint">输入 owner/repo 即可</span>
-                </button>
-                <button
-                  className="analysis-scenario-btn"
-                  onClick={() => {
-                    window.alert('请先到「搜索」页搜索感兴趣的仓库，搜索结果中可一键跳转到分析页。')
-                  }}
-                >
-                  <span className="analysis-scenario-icon">🔎</span>
-                  <span className="analysis-scenario-name">从搜索结果跳转分析</span>
-                  <span className="analysis-scenario-hint">先去搜索页搜仓库</span>
-                </button>
-              </div>
-            </div>
+        {activeTab === 'analysis' && (
+          <>
+            {!report && !loading && !error && (
+              <div className="analysis-empty">
+                {/* 分析维度说明区 */}
+                <div className="analysis-dimensions">
+                  <div className="analysis-dimensions-title">分析会看哪些维度</div>
+                  <div className="analysis-dimension-grid">
+                    <div className="analysis-dimension-card-wrapper">
+                      <div className="analysis-dimension-card">
+                        <span className="analysis-dimension-icon">⚡</span>
+                        <div>
+                          <div className="analysis-dimension-name">活跃度</div>
+                          <div className="analysis-dimension-desc">Commit、Push、Issue、PR 的近期活动情况</div>
+                        </div>
+                      </div>
+                      <div className="dimension-tooltip">
+                        <div className="dimension-tooltip-title">详细说明</div>
+                        <div className="dimension-tooltip-body">分析仓库近期的 Commit 频率、Issue 响应速度、PR 处理效率。活跃的仓库通常有日均 ≥1 次 Commit，Issue 在 7 天内得到回复，PR 在 14 天内被合并或关闭。</div>
+                      </div>
+                    </div>
+                    <div className="analysis-dimension-card-wrapper">
+                      <div className="analysis-dimension-card">
+                        <span className="analysis-dimension-icon">🌱</span>
+                        <div>
+                          <div className="analysis-dimension-name">新手友好度</div>
+                          <div className="analysis-dimension-desc">Good First Issue、CONTRIBUTING、Issue 模板等</div>
+                        </div>
+                      </div>
+                      <div className="dimension-tooltip">
+                        <div className="dimension-tooltip-title">详细说明</div>
+                        <div className="dimension-tooltip-body">检查仓库是否有 Good First Issue 标签、CONTRIBUTING.md 文档、Issue/PR 模板。新手友好度高的仓库会降低贡献门槛，帮助初学者快速上手。</div>
+                      </div>
+                    </div>
+                    <div className="analysis-dimension-card-wrapper">
+                      <div className="analysis-dimension-card">
+                        <span className="analysis-dimension-icon">🔧</span>
+                        <div>
+                          <div className="analysis-dimension-name">维护质量</div>
+                          <div className="analysis-dimension-desc">PR 处理速度、Merge 率、Issue 关闭时间</div>
+                        </div>
+                      </div>
+                      <div className="dimension-tooltip">
+                        <div className="dimension-tooltip-title">详细说明</div>
+                        <div className="dimension-tooltip-body">评估 PR 的处理速度（中位数合并时间）、Merge 率（合并/关闭比例）、Issue 关闭率。高质量的仓库会在 7-14 天内处理 PR，Merge 率{'>'} 60%。</div>
+                      </div>
+                    </div>
+                    <div className="analysis-dimension-card-wrapper">
+                      <div className="analysis-dimension-card">
+                        <span className="analysis-dimension-icon">📚</span>
+                        <div>
+                          <div className="analysis-dimension-name">文档生态</div>
+                          <div className="analysis-dimension-desc">README、行为准则、Topics、License 等</div>
+                        </div>
+                      </div>
+                      <div className="dimension-tooltip">
+                        <div className="dimension-tooltip-title">详细说明</div>
+                        <div className="dimension-tooltip-body">检查 README 完整性、Code of Conduct 行为准则、Topics 标签、License 许可协议。文档完善的仓库更容易被理解和贡献。</div>
+                      </div>
+                    </div>
+                    <div className="analysis-dimension-card-wrapper">
+                      <div className="analysis-dimension-card">
+                        <span className="analysis-dimension-icon">🛡️</span>
+                        <div>
+                          <div className="analysis-dimension-name">风险评估</div>
+                          <div className="analysis-dimension-desc">归档、无协议、单贡献者、活跃度停滞等</div>
+                        </div>
+                      </div>
+                      <div className="dimension-tooltip">
+                        <div className="dimension-tooltip-title">详细说明</div>
+                        <div className="dimension-tooltip-body">综合评估仓库的 License 合规性、长期活跃趋势、安全风险（如依赖过时、未修复的安全 Issue）。帮助你判断是否值得投入时间贡献。</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
-            {/* 示例仓库区：中型新手友好仓库 */}
-            <div className="analysis-empty-examples">
-              <div className="analysis-empty-examples-title">
-                或者，先试试这些对新手友好的中型仓库
+                {/* 交互式入口：3 个场景按钮 */}
+                <div className="analysis-scenarios">
+                  <div className="analysis-scenarios-title">从哪里开始？</div>
+                  <div className="analysis-scenario-grid">
+                    <button
+                      className="analysis-scenario-btn"
+                      onClick={() => {
+                        const v = window.prompt('请输入你 Fork 过的仓库（owner/repo）')
+                        if (v) { setUrl(v); setTimeout(() => analyze(), 50) }
+                      }}
+                    >
+                      <span className="analysis-scenario-icon">🍴</span>
+                      <span className="analysis-scenario-name">分析我 Fork 过的仓库</span>
+                      <span className="analysis-scenario-hint">输入 owner/repo 即可</span>
+                    </button>
+                    <button
+                      className="analysis-scenario-btn"
+                      onClick={() => {
+                        const v = window.prompt('请输入你想贡献的仓库（owner/repo）')
+                        if (v) { setUrl(v); setTimeout(() => analyze(), 50) }
+                      }}
+                    >
+                      <span className="analysis-scenario-icon">💡</span>
+                      <span className="analysis-scenario-name">分析我想贡献的仓库</span>
+                      <span className="analysis-scenario-hint">输入 owner/repo 即可</span>
+                    </button>
+                    <button
+                      className="analysis-scenario-btn"
+                      onClick={() => {
+                        window.alert('请先到「搜索」页搜索感兴趣的仓库，搜索结果中可一键跳转到分析页。')
+                      }}
+                    >
+                      <span className="analysis-scenario-icon">🔎</span>
+                      <span className="analysis-scenario-name">从搜索结果跳转分析</span>
+                      <span className="analysis-scenario-hint">先去搜索页搜仓库</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* 示例仓库区 */}
+                <div className="analysis-empty-examples">
+                  <div className="analysis-empty-examples-title">
+                    或者，先试试这些对新手友好的中型仓库
+                  </div>
+                  <div className="analysis-empty-examples-grid">
+                    <button className="analysis-example-card" onClick={() => { setUrl('sindresorhus/awesome'); setTimeout(() => analyze(), 50) }}>
+                      <span className="analysis-example-icon">📋</span>
+                      <span className="analysis-example-label">sindresorhus/awesome</span>
+                      <span className="analysis-example-desc">awesome 列表</span>
+                    </button>
+                    <button className="analysis-example-card" onClick={() => { setUrl('firstcontributions/first-contributions'); setTimeout(() => analyze(), 50) }}>
+                      <span className="analysis-example-icon">🎓</span>
+                      <span className="analysis-example-label">firstcontributions/first-contributions</span>
+                      <span className="analysis-example-desc">新手贡献教程</span>
+                    </button>
+                    <button className="analysis-example-card" onClick={() => { setUrl('freeCodeCamp/how-to-contribute-to-open-source'); setTimeout(() => analyze(), 50) }}>
+                      <span className="analysis-example-icon">📖</span>
+                      <span className="analysis-example-label">freeCodeCamp/how-to-contribute-to-open-source</span>
+                      <span className="analysis-example-desc">贡献指南</span>
+                    </button>
+                    <button className="analysis-example-card" onClick={() => { setUrl('Hacktoberfest/Hacktoberfest'); setTimeout(() => analyze(), 50) }}>
+                      <span className="analysis-example-icon">🎃</span>
+                      <span className="analysis-example-label">Hacktoberfest/Hacktoberfest</span>
+                      <span className="analysis-example-desc">年度活动</span>
+                    </button>
+                    <button className="analysis-example-card" onClick={() => { setUrl('awesome-selfhosted/awesome-selfhosted'); setTimeout(() => analyze(), 50) }}>
+                      <span className="analysis-example-icon">🖥️</span>
+                      <span className="analysis-example-label">awesome-selfhosted/awesome-selfhosted</span>
+                      <span className="analysis-example-desc">自托管软件列表</span>
+                    </button>
+                    <button className="analysis-example-card" onClick={() => { setUrl('TheAlgorithms/Python'); setTimeout(() => analyze(), 50) }}>
+                      <span className="analysis-example-icon">🐍</span>
+                      <span className="analysis-example-label">TheAlgorithms/Python</span>
+                      <span className="analysis-example-desc">Python 算法集合</span>
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div className="analysis-empty-examples-grid">
-                <button className="analysis-example-card" onClick={() => { setUrl('sindresorhus/awesome'); setTimeout(() => document.querySelector('.search-box-btn')?.click(), 50) }}>
-                  <span className="analysis-example-icon">📋</span>
-                  <span className="analysis-example-label">sindresorhus/awesome</span>
-                  <span className="analysis-example-desc">awesome 列表</span>
-                </button>
-                <button className="analysis-example-card" onClick={() => { setUrl('firstcontributions/first-contributions'); setTimeout(() => document.querySelector('.search-box-btn')?.click(), 50) }}>
-                  <span className="analysis-example-icon">🎓</span>
-                  <span className="analysis-example-label">firstcontributions/first-contributions</span>
-                  <span className="analysis-example-desc">新手贡献教程</span>
-                </button>
-                <button className="analysis-example-card" onClick={() => { setUrl('freeCodeCamp/how-to-contribute-to-open-source'); setTimeout(() => document.querySelector('.search-box-btn')?.click(), 50) }}>
-                  <span className="analysis-example-icon">📖</span>
-                  <span className="analysis-example-label">freeCodeCamp/how-to-contribute-to-open-source</span>
-                  <span className="analysis-example-desc">贡献指南</span>
-                </button>
-                <button className="analysis-example-card" onClick={() => { setUrl('Hacktoberfest/Hacktoberfest'); setTimeout(() => document.querySelector('.search-box-btn')?.click(), 50) }}>
-                  <span className="analysis-example-icon">🎃</span>
-                  <span className="analysis-example-label">Hacktoberfest/Hacktoberfest</span>
-                  <span className="analysis-example-desc">年度活动</span>
-                </button>
-                <button className="analysis-example-card" onClick={() => { setUrl('awesome-selfhosted/awesome-selfhosted'); setTimeout(() => document.querySelector('.search-box-btn')?.click(), 50) }}>
-                  <span className="analysis-example-icon">🖥️</span>
-                  <span className="analysis-example-label">awesome-selfhosted/awesome-selfhosted</span>
-                  <span className="analysis-example-desc">自托管软件列表</span>
-                </button>
-                <button className="analysis-example-card" onClick={() => { setUrl('TheAlgorithms/Python'); setTimeout(() => document.querySelector('.search-box-btn')?.click(), 50) }}>
-                  <span className="analysis-example-icon">🐍</span>
-                  <span className="analysis-example-label">TheAlgorithms/Python</span>
-                  <span className="analysis-example-desc">Python 算法集合</span>
-                </button>
-              </div>
-            </div>
-          </div>
+            )}
+
+            {urlHint && <div className="search-status" style={{ color: 'var(--muted)' }}>{urlHint}</div>}
+            {error && <div className="search-status error">{error}</div>}
+
+            {report && <ReportView report={report} llmSummary={llmSummary} llmLoading={llmLoading} />}
+          </>
         )}
 
-        {urlHint && <div className="search-status" style={{ color: 'var(--muted)' }}>{urlHint}</div>}
-        {error && <div className="search-status error">{error}</div>}
+        {/* README 翻译 Tab */}
+        {activeTab === 'translate' && (
+          <div className="readme-translate-section">
+            {readmeError && <div className="search-status error">{readmeError}</div>}
 
-        {report && <ReportView report={report} llmSummary={llmSummary} llmLoading={llmLoading} onLLM={generateLLMSummary} />}
+            {transProgress && (
+              <div className="readme-progress">
+                <div className="readme-progress-spinner" />
+                <span>{transProgress}</span>
+              </div>
+            )}
+
+            {!translated && !transLoading && !readmeError && (
+              <div className="readme-empty">
+                <div className="readme-empty-icon">🌐</div>
+                <h3>一键翻译 README 为中文</h3>
+                <p>输入仓库地址，点击"翻译 README"，AI 自动翻译并保留 Markdown 格式。翻译完成后还可以向 AI 提问了解更多。</p>
+              </div>
+            )}
+
+            {translated && (
+              <>
+                <div className="readme-result-header">
+                  <span>📖 {readmeName || 'README'} — 中文翻译</span>
+                  <button className="llm-redo" onClick={translateReadme} disabled={transLoading}>重新翻译</button>
+                </div>
+                <div className="readme-content markdown-body">{renderMarkdown(translated)}</div>
+
+                {/* 交互问答区 */}
+                <div className="readme-qa-section">
+                  <div className="readme-qa-title">💬 向 AI 提问</div>
+                  <p className="readme-qa-hint">基于 README 内容，你可以问任何关于这个项目的问题</p>
+                  <div className="readme-qa-messages">
+                    {qaMessages.length === 0 && (
+                      <div className="readme-qa-empty">试试问：这个项目怎么安装？/ 它主要用来做什么？/ 适合新手吗？</div>
+                    )}
+                    {qaMessages.map((msg, i) => (
+                      <div key={i} className={`readme-qa-msg ${msg.role}`}>
+                        <span className="readme-qa-role">{msg.role === 'user' ? '🧑' : '🤖'}</span>
+                        <div className="readme-qa-text markdown-body">{renderMarkdown(msg.content)}</div>
+                      </div>
+                    ))}
+                    {qaLoading && (
+                      <div className="readme-qa-msg assistant">
+                        <span className="readme-qa-role">🤖</span>
+                        <div className="readme-qa-text readme-qa-typing">思考中...</div>
+                      </div>
+                    )}
+                    <div ref={qaEndRef} />
+                  </div>
+                  <div className="readme-qa-input-row">
+                    <input
+                      className="readme-qa-input"
+                      value={qaInput}
+                      onChange={e => setQaInput(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && sendQuestion()}
+                      placeholder="输入你的问题..."
+                      disabled={qaLoading}
+                    />
+                    <button className="readme-qa-send" onClick={sendQuestion} disabled={qaLoading || !qaInput.trim()}>
+                      发送
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </section>
   )
+}
+
+/** 将 Markdown 按 ## 标题分块，每块不超过 maxChars */
+function splitMarkdownChunks(md, maxChars = 3000) {
+  // 按 ## 标题分割
+  const sections = md.split(/(?=^## )/m)
+  const chunks = []
+  let current = ''
+
+  for (const sec of sections) {
+    if (current && (current.length + sec.length > maxChars)) {
+      chunks.push(current.trim())
+      current = sec
+    } else {
+      current += (current ? '\n\n' : '') + sec
+    }
+  }
+  if (current.trim()) chunks.push(current.trim())
+
+  // 如果某块仍然超过 maxChars，强制按字符截断
+  const result = []
+  for (const chunk of chunks) {
+    if (chunk.length <= maxChars) {
+      result.push(chunk)
+    } else {
+      // 在段落边界截断
+      let remaining = chunk
+      while (remaining.length > maxChars) {
+        const cutPoint = remaining.lastIndexOf('\n\n', maxChars)
+        if (cutPoint > maxChars / 2) {
+          result.push(remaining.slice(0, cutPoint).trim())
+          remaining = remaining.slice(cutPoint + 2)
+        } else {
+          result.push(remaining.slice(0, maxChars))
+          remaining = remaining.slice(maxChars)
+        }
+      }
+      if (remaining.trim()) result.push(remaining.trim())
+    }
+  }
+  return result.length > 0 ? result : [md]
 }
 
 /** 轻量级 Markdown 渲染（支持标题/加粗/列表/代码块/段落） */
@@ -388,7 +678,7 @@ function renderInline(text) {
 }
 
 /** 分析报告展示 — 6 块布局 */
-function ReportView({ report, llmSummary, llmLoading, onLLM }) {
+function ReportView({ report, llmSummary, llmLoading }) {
   const { info, liveness, scores, recommendations } = report
   const topics = info.topics || []
 
@@ -440,21 +730,21 @@ function ReportView({ report, llmSummary, llmLoading, onLLM }) {
         </section>
       </div>
 
-      {/* 块 6：AI 项目画像 — 全宽 */}
+      {/* 块 6：AI 项目画像 — 全宽，流式输出 */}
       <section className="analysis-block">
         <div className="llm-section">
-          {!llmSummary && !llmLoading && (
-            <button className="llm-btn" onClick={onLLM}>✨ LLM 生成项目画像</button>
-          )}
-          {llmLoading && <div className="search-status">LLM 分析中...</div>}
+          {llmLoading && !llmSummary && <div className="search-status">AI 正在分析项目画像...</div>}
           {llmSummary && (
             <div className="llm-result">
               <div className="llm-result-header">
                 <span>🧠 AI 项目画像</span>
-                <button className="llm-redo" onClick={onLLM}>重新生成</button>
+                {llmLoading && <span className="llm-typing-indicator">输入中...</span>}
               </div>
               <div className="llm-text markdown-body">{renderMarkdown(llmSummary)}</div>
             </div>
+          )}
+          {!llmSummary && !llmLoading && (
+            <div className="llm-text llm-text-empty">AI 项目画像生成中，请稍候...</div>
           )}
         </div>
       </section>
@@ -881,8 +1171,8 @@ function LanguageBar({ languages }) {
         {entries.map(([lang, bytes]) => {
           const pct = Math.round((bytes / total) * 100)
           return (
-            <div key={lang} className="lang-item" title={`${lang}: ${pct}%`}>
-              <div className="lang-fill" style={{ width: `${Math.max(pct, 2)}%`, background: langColor(lang) }} />
+            <div key={lang} className="lang-item" style={{ flex: `${Math.max(pct, 2)}%` }} title={`${lang}: ${pct}%`}>
+              <div className="lang-fill" style={{ background: langColor(lang) }} />
               <span className="lang-label">{lang} {pct}%</span>
             </div>
           )

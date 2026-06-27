@@ -2,8 +2,9 @@
  * LLM 适配器 — 接入 SiliconFlow
  *
  * 模型：
- *   LLM:       Qwen3-30B-A3B（MoE，3B active，<2s，主力）
- *              Qwen3-8B（L4 兜底，仅轻量模型失败时触发）
+ *   默认:  GLM-4-9B-0414（稠密 9B，~1s，主力，RAG/翻译/画像/漫游）
+ *   L3:    Qwen3-30B-A3B（MoE 3B active，~0.8s，意图分类）
+ *   L4:    GLM-4-9B-0414（稠密 9B，同义词扩展兜底）
  *   Embedding: BAAI/bge-m3（永久免费）
  *
  * LLM 不可用时自动降级为纯规则模式。
@@ -12,12 +13,12 @@
 import { getSetting, setSetting } from './db.js'
 
 const SILICONFLOW_BASE = 'https://api.siliconflow.cn/v1'
-// 默认模型改为 MoE 轻量版（A3B，3B active，~2s），大幅降低 chat/enhance/askRAG 耗时
-const DEFAULT_LLM_MODEL = 'Qwen/Qwen3-30B-A3B-Instruct-2507'
-// L3 轻量模型（与默认一致，保留别名）
+// 默认模型：GLM-4-9B（稠密 9B，~1s，RAG/翻译/画像/漫游主力）
+const DEFAULT_LLM_MODEL = 'THUDM/GLM-4-9B-0414'
+// L3 轻量模型（意图分类专用，A3B 极短 prompt 场景最快）
 const LIGHT_LLM_MODEL = 'Qwen/Qwen3-30B-A3B-Instruct-2507'
-// L4 全量模型（仅 L3 失败时兜底）
-const FULL_LLM_MODEL = 'Qwen/Qwen3-8B'
+// L4 全量模型（同义词扩展兜底，L3 失败时触发）
+const FULL_LLM_MODEL = 'THUDM/GLM-4-9B-0414'
 const DEFAULT_API_KEY = 'sk-huzesdqsfacrwehmnoaaezatkcqzrcvdckwwqujjgqethywx'
 
 let llmProvider = null
