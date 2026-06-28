@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { parseGithubRepoCoordinates, forkRepo, getUpstreamIssues, getIssueDetail, getCurrentUser, getRepoInfo } from '../lib/github.js'
 import { addContribution } from '../lib/db.js'
+import { useScrollReveal } from '../lib/useScrollReveal.js'
+import { chatStream } from '../lib/llm.js'
 
 export default function ContributionPage() {
   const [url, setUrl] = useState('')
@@ -15,8 +18,20 @@ export default function ContributionPage() {
   const [useSSH, setUseSSH] = useState(false)
   const [prForm, setPrForm] = useState({ title: '', body: '', head: '' })
   const [commitMsg, setCommitMsg] = useState('')
+  const [polishing, setPolishing] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef(null)
+
+  useScrollReveal()
+
+  // URL 参数支持：从 URL 读取仓库地址
+  const [searchParams] = useSearchParams()
+  useEffect(() => {
+    const urlParam = searchParams.get('url')
+    if (urlParam && !url) {
+      setUrl(urlParam)
+    }
+  }, [])
 
   function startTimer() { setElapsed(0); let s = 0; timerRef.current = setInterval(() => { s++; setElapsed(s) }, 1000) }
   function stopTimer() { clearInterval(timerRef.current); timerRef.current = null; setElapsed(0) }
@@ -123,6 +138,26 @@ export default function ContributionPage() {
     finally { setLoading('') }
   }
 
+  // ─── AI 润色 PR 描述
+  async function handlePolishPR() {
+    if (!prForm.body.trim() || polishing) return
+    setPolishing(true)
+    const systemPrompt = `你是一个技术文档撰写专家。请润色以下 PR 描述，使其更专业、清晰、有条理。
+要求：
+1. 保持原有的 Summary / Changes / Related Issue 结构
+2. 补充更多上下文和技术细节，让维护者更容易理解这个 PR 的价值
+3. 用中文润色（如果原文是英文，翻译成中文）
+4. 保留原有的 Closes #xxx 引用
+5. 只输出润色后的内容，不要加任何解释`
+    let result = ''
+    await chatStream(systemPrompt, prForm.body, (chunk) => {
+      result += chunk
+      setPrForm(prev => ({ ...prev, body: result }))
+    }, 1024)
+    if (!result) setError('AI 润色失败，请检查 LLM 配置')
+    setPolishing(false)
+  }
+
   // ─── 派生数据 ───
   const cloneUrl = useSSH ? forkInfo?.sshUrl : forkInfo?.cloneUrl
   const userLogin = user?.login || 'your-username'
@@ -149,14 +184,14 @@ export default function ContributionPage() {
   return (
     <section className="section">
       <div className="section-inner">
-        <div className="section-header">
+        <div className="section-header" data-reveal>
           <div className="section-label">模块三</div>
           <h2>贡献助手</h2>
           <p>Fork → 选择 Issue → 本地开发 → 创建 PR，四步完成第一次开源贡献</p>
         </div>
 
         {/* 流程条 */}
-        <div className="flow-strip">
+        <div className="flow-strip" data-reveal>
           <FlowStep num={1} label="Fork 仓库" active={step >= 0} done={step >= 1} />
           <FlowArrow />
           <FlowStep num={2} label="选择 Issue" active={step >= 1} done={step >= 2} />
@@ -398,6 +433,9 @@ export default function ContributionPage() {
                   </label>
                   <textarea className="pr-textarea" value={prForm.body}
                     onChange={e => setPrForm(prev => ({ ...prev, body: e.target.value }))} rows={10} />
+                  <button className="clone-copy-btn" onClick={handlePolishPR} disabled={polishing || !prForm.body.trim()}>
+                    {polishing ? '✨ AI 润色中...' : '✨ AI 润色描述'}
+                  </button>
                 </div>
                 <div className="pr-field">
                   <label className="pr-label">来源分支</label>

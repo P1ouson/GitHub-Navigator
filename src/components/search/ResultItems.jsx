@@ -11,6 +11,7 @@
  */
 
 import { useState, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { scoreIssue, scoreRepo, levelToStars, levelToClass } from '../../lib/beginnerScore.js'
 import { labelTextColor, getLabelClass, livenessClass, livenessText } from './searchUi.js'
 
@@ -65,6 +66,7 @@ export function RankedSection({ title, items }) {
 /** 单条结果卡片 */
 export function RankedItem({ item }) {
   const [showHover, setShowHover] = useState(false)
+  const navigate = useNavigate()
   const open = () => window.open(item.url, '_blank', 'noopener,noreferrer')
   const isGitHubAPI = item._source === 'github_api'
 
@@ -99,6 +101,10 @@ export function RankedItem({ item }) {
           <span className="result-stat">★ {item.stars?.toLocaleString()}</span>
           <span className="result-stat">⑂ {item.forks?.toLocaleString()}</span>
           {item.openIssues > 0 && <span className="result-stat"># {item.openIssues}</span>}
+        </div>
+        <div className="result-item-actions">
+          <button className="result-item-action" onClick={e => { e.stopPropagation(); navigate(`/analysis?url=${encodeURIComponent(item.name)}`) }}>分析此仓库</button>
+          <button className="result-item-action" onClick={e => { e.stopPropagation(); navigate(`/contribute?url=${encodeURIComponent(item.name)}`) }}>开始贡献</button>
         </div>
       </div>
     </div>
@@ -145,6 +151,10 @@ export function RankedItem({ item }) {
             {health?.stars > 0 && <span className="result-stat">★ {health.stars.toLocaleString()}</span>}
             {item.comments > 0 && <span className="result-stat">💬 {item.comments}</span>}
             <span className="result-stat">{new Date(item.createdAt).toLocaleDateString()}</span>
+          </div>
+          <div className="result-item-actions">
+            <button className="result-item-action" onClick={e => { e.stopPropagation(); navigate(`/analysis?url=${encodeURIComponent(item.repo)}`) }}>分析此仓库</button>
+            <button className="result-item-action" onClick={e => { e.stopPropagation(); navigate(`/contribute?url=${encodeURIComponent(item.repo)}`) }}>开始贡献</button>
           </div>
         </div>
       </div>

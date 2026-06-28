@@ -1,8 +1,11 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { parseRepoUrl, getAnalysisData, fetchReadmeContent } from '../lib/github.js'
 import { calcAnalysisScores, assessRepoLiveness } from '../lib/repoHealth.js'
 import { chatStream } from '../lib/llm.js'
 import { usePersistState } from '../lib/pageCache.js'
+import { renderMarkdown } from '../lib/markdown.js'
+import { useScrollReveal } from '../lib/useScrollReveal.js'
 
 export default function AnalysisPage() {
   const [url, setUrl] = usePersistState('analysis', 'url', '')
@@ -13,6 +16,18 @@ export default function AnalysisPage() {
   const [llmSummary, setLlmSummary] = usePersistState('analysis', 'llmSummary', '')
   const [llmLoading, setLlmLoading] = useState(false)
   const [activeTab, setActiveTab] = usePersistState('analysis', 'activeTab', 'analysis')
+
+  useScrollReveal()
+
+  // URL 参数支持：初次加载时从 URL 读取仓库地址
+  const [searchParams] = useSearchParams()
+  useEffect(() => {
+    const urlParam = searchParams.get('url')
+    if (urlParam && !url) {
+      setUrl(urlParam)
+      setTimeout(() => analyze(urlParam), 100)
+    }
+  }, []) // 仅在挂载时执行一次
 
   // README 翻译状态
   const [readmeRaw, setReadmeRaw] = usePersistState('analysis', 'readmeRaw', '')
@@ -28,15 +43,16 @@ export default function AnalysisPage() {
   const [qaLoading, setQaLoading] = useState(false)
   const qaEndRef = useRef(null)
 
-  async function analyze() {
-    if (!url.trim()) return
+  async function analyze(overrideUrl) {
+    const targetUrl = overrideUrl || url
+    if (!targetUrl.trim()) return
     setLoading(true)
     setError('')
     setReport(null)
     setLlmSummary('')
     setUrlHint('')
 
-    const parsed = parseRepoUrl(url)
+    const parsed = parseRepoUrl(targetUrl)
     if (!parsed) {
       setError('无法解析仓库地址，请输入 owner/repo 或完整 GitHub URL')
       setLoading(false)
@@ -159,38 +175,60 @@ export default function AnalysisPage() {
       setReadmeRaw(content)
       setReadmeName(name)
 
-      const chunks = splitMarkdownChunks(content, 3000)
+      // 预处理：清除 HTML 标签和 GitHub 徽章图片，避免翻译出乱码
+      const cleaned = preprocessReadme(content)
+      const chunks = splitMarkdownChunks(cleaned, 3000)
       setTransProgress(`正在并行解释 ${chunks.length} 个片段...`)
 
       const systemPrompt = `你是一个技术文档翻译官。请用最简单直白的中文解释以下 README 内容，让完全不懂技术的人也能看懂。
 要求：
-1. 保留所有 Markdown 格式（标题、代码块、链接、表格、列表）
-2. 代码块和命令保持原样不翻译
-3. 链接 URL 保持原样，链接文字翻译成中文
-4. 技术术语用通俗说法解释，比如 "dependency" 说成 "依赖包"，"API" 说成 "接口"
-5. 不要逐字翻译，用你自己的话把意思说清楚
-6. 安装步骤要解释每一步在干什么，不只是翻译命令
-7. 只输出结果，不要加任何解释说明`
+1. 保留所有 Markdown 格式（标题、代码块、链接、表格、列表、图片等）
+2. 图片语法 ![...](...) 必须原样保留，不要翻译或修改
+3. 代码块和命令保持原样不翻译
+4. 链接 URL 保持原样，链接文字翻译成中文
+5. 技术术语用通俗说法解释，比如 "dependency" 说成 "依赖包"，"API" 说成 "接口"
+6. 不要逐字翻译，用你自己的话把意思说清楚
+7. 安装步骤要解释每一步在干什么，不只是翻译命令
+8. 只输出结果，不要加任何解释说明`
 
-      // 并行翻译所有分块
+      // 并行翻译 + throttle 渲染：多个块同时流式，但 setTranslated 最多每 50ms 调一次，不闪
       const chunkResults = new Array(chunks.length).fill(null)
       const chunkStreaming = new Array(chunks.length).fill('')
+      let pendingUpdate = false
 
-      const assembleDisplay = () => chunkResults.map((r, j) => {
-        if (r !== null) return r
-        return chunkStreaming[j] || '⏳'
-      }).join('\n\n')
+      const assembleDisplay = () =>
+        chunkResults.map((r, j) => (r !== null ? r : chunkStreaming[j] || '⏳')).join('\n\n')
 
-      await Promise.all(chunks.map((chunk, i) => (async () => {
-        let content = ''
-        await chatStream(systemPrompt, chunk, (c) => {
-          content += c
-          chunkStreaming[i] = content
+      const throttledUpdate = () => {
+        if (pendingUpdate) return
+        pendingUpdate = true
+        requestAnimationFrame(() => {
           setTranslated(assembleDisplay())
-        }, 2048)
-        chunkResults[i] = content || chunk
-        setTranslated(assembleDisplay())
-      })()))
+          pendingUpdate = false
+        })
+      }
+
+      await Promise.all(
+        chunks.map((chunk, i) =>
+          (async () => {
+            let content = ''
+            await chatStream(
+              systemPrompt,
+              chunk,
+              (c) => {
+                content += c
+                chunkStreaming[i] = content
+                throttledUpdate()
+              },
+              2048
+            )
+            chunkResults[i] = content || chunk
+            throttledUpdate()
+          })()
+        )
+      )
+
+      setTranslated(assembleDisplay())
 
       setTransProgress('')
     } catch (e) {
@@ -220,7 +258,7 @@ export default function AnalysisPage() {
         reply += chunk
         setQaMessages([...newMsgs, { role: 'assistant', content: reply }])
       },
-      512
+      1024
     )
 
     if (!reply) {
@@ -234,7 +272,7 @@ export default function AnalysisPage() {
     <section className="section analysis-section-wide">
       <div className="section-inner section-inner-wide">
         {/* 描述区 */}
-        <div className="analysis-intro">
+        <div className="analysis-intro" data-reveal>
           <div className="section-label">模块二</div>
           <h2>仓库分析中心</h2>
           <div className="analysis-empty-icon">🔍</div>
@@ -244,7 +282,7 @@ export default function AnalysisPage() {
           </p>
         </div>
 
-        <div className="analysis-input">
+        <div className="analysis-input" data-reveal>
           <input
             className="search-box-input"
             value={url}
@@ -258,7 +296,7 @@ export default function AnalysisPage() {
         </div>
 
         {/* Tab 切换 */}
-        <div className="readme-tabs">
+        <div className="readme-tabs" data-reveal>
           <button className={`readme-tab ${activeTab === 'analysis' ? 'active' : ''}`} onClick={() => setActiveTab('analysis')}>
             📊 健康分析
           </button>
@@ -426,7 +464,7 @@ export default function AnalysisPage() {
             {urlHint && <div className="search-status" style={{ color: 'var(--muted)' }}>{urlHint}</div>}
             {error && <div className="search-status error">{error}</div>}
 
-            {report && <ReportView report={report} llmSummary={llmSummary} llmLoading={llmLoading} />}
+            {report && <ReportView report={report} llmSummary={llmSummary} llmLoading={llmLoading} setUrl={setUrl} setReport={setReport} setLlmSummary={setLlmSummary} />}
           </>
         )}
 
@@ -472,12 +510,6 @@ export default function AnalysisPage() {
                         <div className="readme-qa-text markdown-body">{renderMarkdown(msg.content)}</div>
                       </div>
                     ))}
-                    {qaLoading && (
-                      <div className="readme-qa-msg assistant">
-                        <span className="readme-qa-role">🤖</span>
-                        <div className="readme-qa-text readme-qa-typing">思考中...</div>
-                      </div>
-                    )}
                     <div ref={qaEndRef} />
                   </div>
                   <div className="readme-qa-input-row">
@@ -501,6 +533,34 @@ export default function AnalysisPage() {
       </div>
     </section>
   )
+}
+
+/** 预处理 README：清除 HTML 标签和编码问题，保留 Markdown 图片 */
+function preprocessReadme(md) {
+  let cleaned = md
+  // 1. 移除 HTML 注释
+  cleaned = cleaned.replace(/<!--[\s\S]*?-->/g, '')
+  // 2. 移除 <img> 标签，替换为 [图片]
+  cleaned = cleaned.replace(/<img[^>]*\/?>/gi, '[图片]')
+  // 3. 移除 <a> 标签但保留链接文字
+  cleaned = cleaned.replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, '$1')
+  // 4. 移除其他 HTML 标签但保留内容
+  cleaned = cleaned.replace(/<\/?(div|span|p|br|hr|table|tr|td|th|thead|tbody|col|colgroup|caption|style|script|iframe|svg|video|audio|source|canvas|figure|figcaption|details|summary|section|article|header|footer|nav|aside|main|form|input|button|select|option|textarea|label|fieldset|legend)[^>]*\/?>/gi, '')
+  cleaned = cleaned.replace(/<\/?(div|span|p|br|hr|table|tr|td|th|thead|tbody|col|colgroup|caption|style|script|iframe|svg|video|audio|source|canvas|figure|figcaption|details|summary|section|article|header|footer|nav|aside|main|form|input|button|select|option|textarea|label|fieldset|legend)[^>]*>/gi, '')
+  // 5. 保留 Markdown 图片语法 ![...](...)，只移除裸 URL 的 GitHub 徽章（如 !https://...）
+  cleaned = cleaned.replace(/!https?:\/\/\S+/g, '')
+  // 6. 修复编码乱码：替换常见的 mojibake 模式
+  cleaned = cleaned.replace(/Ã¢ÂÂ/g, "'")
+  cleaned = cleaned.replace(/Ã¢ÂÂ/g, '"')
+  cleaned = cleaned.replace(/Ã¢ÂÂ/g, '"')
+  cleaned = cleaned.replace(/Ã¢ÂÂ/g, '—')
+  cleaned = cleaned.replace(/Ã¢ÂÂ/g, '–')
+  cleaned = cleaned.replace(/ÃÂ/g, '')
+  cleaned = cleaned.replace(/â/g, '')
+  cleaned = cleaned.replace(/Â/g, '')
+  // 7. 清理多余空行（超过 3 个连续空行压缩为 2 个）
+  cleaned = cleaned.replace(/\n{4,}/g, '\n\n\n')
+  return cleaned
 }
 
 /** 将 Markdown 按 ## 标题分块，每块不超过 maxChars */
@@ -544,143 +604,11 @@ function splitMarkdownChunks(md, maxChars = 3000) {
   return result.length > 0 ? result : [md]
 }
 
-/** 轻量级 Markdown 渲染（支持标题/加粗/列表/代码块/段落） */
-function renderMarkdown(md) {
-  if (!md) return null
-  const lines = md.split('\n')
-  const blocks = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]
-    // 代码块
-    if (line.trim().startsWith('```')) {
-      const codeLines = []
-      i++
-      while (i < lines.length && !lines[i].trim().startsWith('```')) {
-        codeLines.push(lines[i])
-        i++
-      }
-      i++ // 跳过结束的 ```
-      blocks.push(<pre key={blocks.length} className="md-code-block"><code>{codeLines.join('\n')}</code></pre>)
-      continue
-    }
-    // 标题
-    const hMatch = line.match(/^(#{1,4})\s+(.*)/)
-    if (hMatch) {
-      const level = hMatch[1].length
-      const text = renderInline(hMatch[2])
-      blocks.push(level === 1
-        ? <h3 key={blocks.length} className="md-h1">{text}</h3>
-        : level === 2
-        ? <h4 key={blocks.length} className="md-h2">{text}</h4>
-        : <h5 key={blocks.length} className="md-h3">{text}</h5>)
-      i++
-      continue
-    }
-    // 无序列表
-    if (/^\s*[-*•]\s+/.test(line)) {
-      const items = []
-      while (i < lines.length && /^\s*[-*•]\s+/.test(lines[i])) {
-        items.push(<li key={items.length}>{renderInline(lines[i].replace(/^\s*[-*•]\s+/, ''))}</li>)
-        i++
-      }
-      blocks.push(<ul key={blocks.length} className="md-ul">{items}</ul>)
-      continue
-    }
-    // 有序列表
-    if (/^\s*\d+[.)]\s+/.test(line)) {
-      const items = []
-      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) {
-        items.push(<li key={items.length}>{renderInline(lines[i].replace(/^\s*\d+[.)]\s+/, ''))}</li>)
-        i++
-      }
-      blocks.push(<ol key={blocks.length} className="md-ol">{items}</ol>)
-      continue
-    }
-    // 空行
-    if (!line.trim()) { i++; continue }
-    // Markdown 表格
-    if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
-      const tableRows = []
-      while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
-        tableRows.push(lines[i].trim())
-        i++
-      }
-      // 跳过只有分隔符的行（如 |---|---|）
-      const dataRows = tableRows.filter(r => !/^\|[\s\-:|]+\|$/.test(r))
-      if (dataRows.length >= 2) {
-        const headerCells = dataRows[0].split('|').filter(c => c.trim())
-        const bodyRows = dataRows.slice(1)
-        blocks.push(
-          <table key={blocks.length} className="md-table">
-            <thead>
-              <tr>{headerCells.map((c, ci) => <th key={ci}>{renderInline(c.trim())}</th>)}</tr>
-            </thead>
-            <tbody>
-              {bodyRows.map((row, ri) => {
-                const cells = row.split('|').filter(c => c.trim())
-                return <tr key={ri}>{cells.map((c, ci) => <td key={ci}>{renderInline(c.trim())}</td>)}</tr>
-              })}
-            </tbody>
-          </table>
-        )
-      }
-      continue
-    }
-    // 段落
-    blocks.push(<p key={blocks.length} className="md-p">{renderInline(line)}</p>)
-    i++
-  }
-  return blocks
-}
-
-/** 渲染行内格式（加粗/代码/链接） */
-function renderInline(text) {
-  const parts = []
-  let remaining = text
-  let key = 0
-  while (remaining) {
-    // 加粗 **text**
-    const boldMatch = remaining.match(/\*\*(.+?)\*\*/)
-    if (boldMatch) {
-      const idx = remaining.indexOf(boldMatch[0])
-      if (idx > 0) parts.push(<span key={key++}>{remaining.slice(0, idx)}</span>)
-      parts.push(<strong key={key++}>{boldMatch[1]}</strong>)
-      remaining = remaining.slice(idx + boldMatch[0].length)
-      continue
-    }
-    // 链接 [text](url)
-    const linkMatch = remaining.match(/\[([^\]]+)\]\(([^)\s]+)\)/)
-    if (linkMatch) {
-      const idx = remaining.indexOf(linkMatch[0])
-      if (idx > 0) parts.push(<span key={key++}>{remaining.slice(0, idx)}</span>)
-      parts.push(
-        <a key={key++} href={linkMatch[2]} target="_blank" rel="noopener noreferrer" className="md-link">
-          {linkMatch[1]}
-        </a>
-      )
-      remaining = remaining.slice(idx + linkMatch[0].length)
-      continue
-    }
-    // 行内代码 `code`
-    const codeMatch = remaining.match(/`(.+?)`/)
-    if (codeMatch) {
-      const idx = remaining.indexOf(codeMatch[0])
-      if (idx > 0) parts.push(<span key={key++}>{remaining.slice(0, idx)}</span>)
-      parts.push(<code key={key++} className="md-inline-code">{codeMatch[1]}</code>)
-      remaining = remaining.slice(idx + codeMatch[0].length)
-      continue
-    }
-    parts.push(<span key={key++}>{remaining}</span>)
-    break
-  }
-  return parts
-}
-
 /** 分析报告展示 — 6 块布局 */
-function ReportView({ report, llmSummary, llmLoading }) {
+function ReportView({ report, llmSummary, llmLoading, setUrl, setReport, setLlmSummary }) {
   const { info, liveness, scores, recommendations } = report
   const topics = info.topics || []
+  const navigate = useNavigate()
 
   return (
     <div className="analysis-report">
@@ -746,6 +674,25 @@ function ReportView({ report, llmSummary, llmLoading }) {
           {!llmSummary && !llmLoading && (
             <div className="llm-text llm-text-empty">AI 项目画像生成中，请稍候...</div>
           )}
+        </div>
+      </section>
+
+      {/* CTA 区域 */}
+      <section className="analysis-block analysis-cta-block">
+        <div className="analysis-cta">
+          <div className="analysis-cta-title">下一步做什么？</div>
+          <div className="analysis-cta-desc">分析完成，选择一个方向继续</div>
+          <div className="analysis-cta-actions">
+            <button className="analysis-cta-btn analysis-cta-primary" onClick={() => window.open(`https://github.com/${report.info.fullName}`, '_blank')}>
+              在 GitHub 上查看 →
+            </button>
+            <button className="analysis-cta-btn" onClick={() => navigate(`/contribute?url=${encodeURIComponent(report.info.fullName)}`)}>
+              去贡献这个仓库 🤝
+            </button>
+            <button className="analysis-cta-btn" onClick={() => { setUrl(''); setReport(null); setLlmSummary('') }}>
+              换一个仓库分析 🔄
+            </button>
+          </div>
         </div>
       </section>
     </div>

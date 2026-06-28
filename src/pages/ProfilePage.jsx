@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { getContributions, getContributionStats } from '../lib/db.js'
-import { searchBeginnerIssues, batchGetRepoInfos } from '../lib/github.js'
+import { searchBeginnerIssues, batchGetRepoInfos, syncPRStatus } from '../lib/github.js'
 import { matchAnyKeyword } from '../lib/keywordMatch.js'
+import { useScrollReveal } from '../lib/useScrollReveal.js'
 
 /**
  * 技术领域定义：每个领域对应一组关键词，用于从贡献记录中识别技术栈。
@@ -151,6 +152,10 @@ export default function ProfilePage() {
   const [quality, setQuality] = useState(null)
   const [issues, setIssues] = useState([])
   const [loadingIssues, setLoadingIssues] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState('')
+
+  useScrollReveal()
 
   useEffect(() => { loadData() }, [])
 
@@ -221,6 +226,18 @@ export default function ProfilePage() {
     setLoadingIssues(false)
   }
 
+  async function handleSync() {
+    setSyncing(true); setSyncMsg('')
+    try {
+      const result = await syncPRStatus()
+      setSyncMsg(result.message)
+      if (result.synced > 0) await loadData() // 重新加载数据
+    } catch (e) {
+      setSyncMsg(`同步失败：${e.message}`)
+    }
+    setSyncing(false)
+  }
+
   const score = stats ? calcProfileScore(stats) : null
   const level = score ? getLevel(score.total) : null
   const uniqueRepos = [...new Set(timeline.map(t => t.repo))]
@@ -228,7 +245,7 @@ export default function ProfilePage() {
   return (
     <section className="section">
       <div className="section-inner">
-        <div className="section-header">
+        <div className="section-header" data-reveal>
           <div className="section-label">模块五</div>
           <h2>能力画像</h2>
           <p>技术雷达图 + 贡献质量评估 + 个性化 Issue 推荐</p>
@@ -279,6 +296,12 @@ export default function ProfilePage() {
             </div>
           </div>
         )}
+        <div className="growth-actions" data-reveal>
+          <button className="growth-export-btn" onClick={handleSync} disabled={syncing}>
+            {syncing ? '🔄 同步中...' : '🔄 同步 GitHub PR 状态'}
+          </button>
+        </div>
+        {syncMsg && <div className="sync-msg" style={{textAlign:'center',fontSize:'13px',color:'var(--muted)',marginTop:'8px'}}>{syncMsg}</div>}
 
         {/* 雷达图（左）+ 质量卡片（右）并排展示 */}
         {radarScores.length > 0 && quality && (

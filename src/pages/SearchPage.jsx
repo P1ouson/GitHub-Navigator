@@ -37,6 +37,7 @@ import SearchConfigPanel from '../components/SearchConfigPanel.jsx'
 import { RankedSection, KnowledgeSection } from '../components/search/ResultItems.jsx'
 import { FilterPanel } from '../components/search/FilterPanel.jsx'
 import { getSectionTitle } from '../lib/searchRanker.js'
+import { renderMarkdown } from '../lib/markdown.js'
 
 const TAB_CONFIG = [
   { key: 'repo', icon: '📦', label: '仓库' },
@@ -57,7 +58,10 @@ export default function SearchPage() {
   const {
     rankedSections, results, intent, activeTab, ragAnswer,
     state, setActiveTab,
-    search: doSearch, loadMore, fetchMoreForFilter, fetchMoreForIssueFilter, preloadIfNeeded,
+    search: doSearch, loadMore, fetchMoreForFilter, fetchMoreForIssueFilter,
+    repoFilterSearch, resetRepoFilter, issueDifficultySearch,
+    labelSearch, resetLabelFilter,
+    preloadIfNeeded, restoreFromCache,
     issueItems, repoItems, lockedLanguages, getTotalCount, hasMore,
   } = search
 
@@ -97,13 +101,40 @@ export default function SearchPage() {
 
   function handleApplyConfig() {
     const q = searchParams.get('q')
-    if (q) setSearchParams({ q })
+    if (q) {
+      // 直接调用 doSearch，不依赖 setSearchParams 触发（相同 q 值会被去重）
+      setIssueLanguageFilter(new Set())
+      setRepoLanguageFilter(new Set())
+      setTopicFilter(new Set())
+      setIssueLabelFilter(new Set())
+      setDifficultyFilter(new Set())
+      setIssuePage(1)
+      setRepoPage(1)
+      doSearch(q, configRef.current)
+    }
   }
 
   // URL 参数变化 → 触发搜索
   useEffect(() => {
     const q = searchParams.get('q')
     if (q) {
+      // 缓存检查（5min TTL）
+      const cacheKey = `search_${q}`
+      const cached = sessionStorage.getItem(cacheKey)
+      if (cached) {
+        try {
+          const { data, ts } = JSON.parse(cached)
+          if (Date.now() - ts < 5 * 60 * 1000) {
+            restoreFromCache(data)
+            // 拆分 bang 前缀
+            const { bang, rest } = splitBang(q)
+            setSelectedType(bang)
+            setQuery(rest)
+            return
+          }
+        } catch {}
+      }
+
       // 拆分 bang 前缀：!repo react → selectedType='!repo', query='react'
       const { bang, rest } = splitBang(q)
       setSelectedType(bang)
@@ -196,42 +227,27 @@ export default function SearchPage() {
   const repoTopics = useMemo(() => aggregateTopics(repoItems), [repoItems, repoItems.length])
 
   // ===== 筛选逻辑 =====
-  const filteredIssueItems = useMemo(() => issueItems.filter(issue => {
-    if (issueLabelFilter.size > 0) {
-      if (!issue.labels || !issue.labels.some(l => issueLabelFilter.has((l.name || '').toLowerCase()))) return false
-    }
-    if (issueLanguageFilter.size > 0) {
+  // repo：API 筛选后 pool 中直接就是最终结果，无需客户端过滤
+  const filteredRepoItems = repoItems
+
+  // issue：仅语言筛选保留客户端过滤（API 不支持），标签和难度已由 API 处理
+  const filteredIssueItems = useMemo(() => {
+    if (issueLanguageFilter.size === 0) return issueItems
+    return issueItems.filter(issue => {
       if (!issue._repoHealth) return true
       const lang = issue._repoHealth.language
       if (!lang || !issueLanguageFilter.has(lang)) return false
-    }
-    if (difficultyFilter.size > 0) {
-      if (!difficultyFilter.has(issueDifficulty(issue))) return false
-    }
-    return true
-  }), [issueItems, issueItems.length, issueLabelFilter, issueLanguageFilter, difficultyFilter])
+      return true
+    })
+  }, [issueItems, issueItems.length, issueLanguageFilter])
 
-  const filteredRepoItems = useMemo(() => repoItems.filter(repo => {
-    if (repoLanguageFilter.size > 0) {
-      if (!repo.language || !repoLanguageFilter.has(repo.language)) return false
-    }
-    if (topicFilter.size > 0) {
-      const topics = repo.topics || []
-      if (!topics.some(t => topicFilter.has(t))) return false
-    }
-    return true
-  }), [repoItems, repoItems.length, repoLanguageFilter, topicFilter])
-
-  // repo 筛选自动加载：筛选后结果不足 pageSize 时循环拉更多，直到够数或 hasMore 耗尽
+  // repo 筛选自动加载：API 筛选后结果不足 pageSize 时拉更多
   useEffect(() => {
     if (activeTab !== 'repo') return
     if (filterLoadingRef.current) return
     if (state.status !== 'idle') return
-    // 只在有筛选条件时才自动补数据（无筛选时首屏已够）
     if (repoLanguageFilter.size === 0 && topicFilter.size === 0) return
-    // 筛选后结果已够一页，不再拉
     if (filteredRepoItems.length >= pageSize) return
-    // 没有更多数据可拉，停止
     if (!hasMore('repo')) return
 
     filterLoadingRef.current = true
@@ -274,13 +290,13 @@ export default function SearchPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [activeTab, state.status, loadMore, poolTotal, pageSize])
 
-  // issue 筛选自动加载：筛选后结果不足 pageSize 时循环拉更多
+  // issue 语言筛选自动加载：仅语言筛选保留客户端过滤，不足时补数据
   const issueFilterLoadingRef = useRef(false)
   useEffect(() => {
     if (activeTab !== 'issue') return
     if (issueFilterLoadingRef.current) return
     if (state.status !== 'idle') return
-    if (issueLanguageFilter.size === 0 && issueLabelFilter.size === 0 && difficultyFilter.size === 0) return
+    if (issueLanguageFilter.size === 0) return
     if (filteredIssueItems.length >= pageSize) return
     if (!hasMore('issue')) return
 
@@ -288,14 +304,11 @@ export default function SearchPage() {
     fetchMoreForIssueFilter(configRef.current).finally(() => {
       issueFilterLoadingRef.current = false
     })
-  }, [activeTab, state.status, filteredIssueItems.length, issueLanguageFilter, issueLabelFilter, difficultyFilter, pageSize, hasMore, fetchMoreForIssueFilter])
+  }, [activeTab, state.status, filteredIssueItems.length, issueLanguageFilter, pageSize, hasMore, fetchMoreForIssueFilter])
 
   // ===== loading 文案映射 =====
-  const isLoading = state.status === 'searching'
-  const loadingHint = state.status === 'searching' ? state.hint : ''
+  const isLoading = state.status === 'searching' || state.status === 'label_search' || state.status === 'repo_filter' || state.status === 'expanding'
   const isLoadingMore = state.status === 'loading_more'
-  const isRepoFilter = state.status === 'repo_filter'
-  const isExpanding = state.status === 'expanding'
   const exhausted = !hasMore(activeTab)
 
   return (
@@ -390,26 +403,23 @@ export default function SearchPage() {
 
         {/* 状态区 */}
         {isLoading && <div className="search-status">搜索中...</div>}
-        {!isLoading && loadingHint && <div className="search-status search-status-sub">{loadingHint}</div>}
         {isLoadingMore && <div className="search-status search-status-sub">正在加载更多...</div>}
-        {isRepoFilter && <div className="search-status search-status-sub">结果筛选中...</div>}
-        {isExpanding && <div className="search-status search-status-sub">结果较少，正在扩大搜索范围...</div>}
         {state.error && <div className="search-status error">{state.error}</div>}
-        {!isLoading && !loadingHint && !state.error && !isExpanding && !isRepoFilter && intent && rankedSections &&
+        {!isLoading && !isLoadingMore && !state.error && intent && rankedSections &&
          !results.knowledge && currentFilteredItems.length === 0 &&
          !Object.values(rankedSections).some(arr => arr && arr.length > 0) && (
           <div className="search-status">无结果</div>
         )}
 
         {/* 零结果提示（用 currentFilteredItems 判断，非 rankedSections）*/}
-        {!isLoading && !loadingHint && !state.error && !isExpanding && !isRepoFilter && activeTab === 'issue' && currentFilteredItems.length === 0 && (
+        {!isLoading && !isLoadingMore && !state.error && activeTab === 'issue' && currentFilteredItems.length === 0 && (
           <div className="search-status">
             {getTotalCount('issue') > 0
               ? `GitHub 约 ${getTotalCount('issue')} 条匹配，但经健康度过滤后暂无结果。请放宽活跃度筛选（!minLiveness:any）或检查 Token。`
               : 'GitHub 无匹配结果，请换关键词搜索'}
           </div>
         )}
-        {!isLoading && !loadingHint && !state.error && !isExpanding && !isRepoFilter && activeTab === 'repo' && currentFilteredItems.length === 0 && intent === 'repo' && (
+        {!isLoading && !isLoadingMore && !state.error && activeTab === 'repo' && currentFilteredItems.length === 0 && intent === 'repo' && (
           <div className="search-status">
             未找到匹配仓库。可试 !repo Python language:Python stars:&gt;50，或检查 Token/代理。
           </div>
@@ -443,10 +453,8 @@ export default function SearchPage() {
             </div>
             {ragAnswer && (
               <>
-                <div className="rag-answer-body">
-                  {ragAnswer.answer.split('\n').map((line, i) => (
-                    <p key={i}>{line}</p>
-                  ))}
+                <div className="rag-answer-body markdown-body">
+                  {renderMarkdown(ragAnswer.answer)}
                 </div>
                 {ragAnswer.sources?.length > 0 && (
                   <div className="rag-answer-sources">
@@ -497,6 +505,7 @@ export default function SearchPage() {
                     setIssueLanguageFilter(new Set(lockedLanguages))
                     setDifficultyFilter(new Set())
                     setIssuePage(1)
+                    doSearch(searchParams.get('q'), configRef.current)
                   }}
                   sections={[
                     {
@@ -504,13 +513,16 @@ export default function SearchPage() {
                       items: issueDifficulties.filter(d => d.count > 0).map(d => ({ key: d.key, name: d.label })),
                       selected: difficultyFilter,
                       onToggle: (key) => {
-                        setDifficultyFilter(prev => {
-                          const next = new Set(prev)
-                          if (next.has(key)) next.delete(key)
-                          else next.add(key)
-                          return next
-                        })
+                        const next = new Set(difficultyFilter)
+                        if (next.has(key)) next.delete(key)
+                        else next.add(key)
+                        setDifficultyFilter(next)
                         setIssuePage(1)
+                        if (next.size > 0) {
+                          issueDifficultySearch(next, configRef.current)
+                        } else {
+                          resetLabelFilter(configRef.current)
+                        }
                       },
                     },
                     {
@@ -519,12 +531,10 @@ export default function SearchPage() {
                       selected: issueLanguageFilter,
                       onToggle: (key) => {
                         if (lockedLanguages.has(key) && issueLanguageFilter.has(key)) return
-                        setIssueLanguageFilter(prev => {
-                          const next = new Set(prev)
-                          if (next.has(key)) next.delete(key)
-                          else next.add(key)
-                          return next
-                        })
+                        const next = new Set(issueLanguageFilter)
+                        if (next.has(key)) next.delete(key)
+                        else next.add(key)
+                        setIssueLanguageFilter(next)
                         setIssuePage(1)
                       },
                       popularKeys: new Set(POPULAR_LANGUAGES),
@@ -537,13 +547,16 @@ export default function SearchPage() {
                       items: beginnerLabels.map(l => ({ key: l.name.toLowerCase(), name: l.name, color: l.color })),
                       selected: issueLabelFilter,
                       onToggle: (key) => {
-                        setIssueLabelFilter(prev => {
-                          const next = new Set(prev)
-                          if (next.has(key)) next.delete(key)
-                          else next.add(key)
-                          return next
-                        })
+                        const next = new Set(issueLabelFilter)
+                        if (next.has(key)) next.delete(key)
+                        else next.add(key)
+                        setIssueLabelFilter(next)
                         setIssuePage(1)
+                        if (next.size > 0) {
+                          labelSearch(next, configRef.current)
+                        } else {
+                          resetLabelFilter(configRef.current)
+                        }
                       },
                     } : null,
                     otherLabels.length > 0 ? {
@@ -551,13 +564,16 @@ export default function SearchPage() {
                       items: otherLabels.map(l => ({ key: l.name.toLowerCase(), name: l.name, color: l.color })),
                       selected: issueLabelFilter,
                       onToggle: (key) => {
-                        setIssueLabelFilter(prev => {
-                          const next = new Set(prev)
-                          if (next.has(key)) next.delete(key)
-                          else next.add(key)
-                          return next
-                        })
+                        const next = new Set(issueLabelFilter)
+                        if (next.has(key)) next.delete(key)
+                        else next.add(key)
+                        setIssueLabelFilter(next)
                         setIssuePage(1)
+                        if (next.size > 0) {
+                          labelSearch(next, configRef.current)
+                        } else {
+                          resetLabelFilter(configRef.current)
+                        }
                       },
                     } : null,
                   ].filter(Boolean)}
@@ -570,6 +586,7 @@ export default function SearchPage() {
                     setRepoLanguageFilter(new Set(lockedLanguages))
                     setTopicFilter(new Set())
                     setRepoPage(1)
+                    doSearch(searchParams.get('q'), configRef.current)
                   }}
                   sections={[
                     {
@@ -578,13 +595,16 @@ export default function SearchPage() {
                       selected: repoLanguageFilter,
                       onToggle: (key) => {
                         if (lockedLanguages.has(key) && repoLanguageFilter.has(key)) return
-                        setRepoLanguageFilter(prev => {
-                          const next = new Set(prev)
-                          if (next.has(key)) next.delete(key)
-                          else next.add(key)
-                          return next
-                        })
+                        const next = new Set(repoLanguageFilter)
+                        if (next.has(key)) next.delete(key)
+                        else next.add(key)
+                        setRepoLanguageFilter(next)
                         setRepoPage(1)
+                        if (next.size > 0 || topicFilter.size > 0) {
+                          repoFilterSearch(next, topicFilter, configRef.current)
+                        } else {
+                          doSearch(searchParams.get('q'), configRef.current)
+                        }
                       },
                       popularKeys: new Set(POPULAR_LANGUAGES),
                       showAll: showAllLangs,
@@ -596,13 +616,16 @@ export default function SearchPage() {
                       items: repoTopics.map(t => ({ key: t.name, name: t.name })),
                       selected: topicFilter,
                       onToggle: (key) => {
-                        setTopicFilter(prev => {
-                          const next = new Set(prev)
-                          if (next.has(key)) next.delete(key)
-                          else next.add(key)
-                          return next
-                        })
+                        const next = new Set(topicFilter)
+                        if (next.has(key)) next.delete(key)
+                        else next.add(key)
+                        setTopicFilter(next)
                         setRepoPage(1)
+                        if (repoLanguageFilter.size > 0 || next.size > 0) {
+                          repoFilterSearch(repoLanguageFilter, next, configRef.current)
+                        } else {
+                          doSearch(searchParams.get('q'), configRef.current)
+                        }
                       },
                     } : null,
                   ].filter(Boolean)}
@@ -610,6 +633,7 @@ export default function SearchPage() {
               )}
             </aside>
 
+            {currentFilteredItems.length > 0 && (
             <div className="search-content">
               <RankedSection
                 title={getSectionTitle(activeTab)}
@@ -619,6 +643,7 @@ export default function SearchPage() {
                 <div className="search-loading-more">加载更多数据中...</div>
               )}
             </div>
+            )}
           </div>
         )}
 

@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { parseRepoUrl, getOctokit, safeGithub, getGitHubConfig } from '../lib/github.js'
+import { parseRepoUrl, getOctokit, safeGithub, getGitHubConfig, batchGetRepoInfos } from '../lib/github.js'
 import { usePersistState } from '../lib/pageCache.js'
+import { useScrollReveal } from '../lib/useScrollReveal.js'
 import ForceGraph3D from 'react-force-graph-3d'
 import * as THREE from 'three'
+import { useNavigate } from 'react-router-dom'
 
 /* ============================================================
  * 配色体系 —— 亮色主题：米白/灰/温和
@@ -307,7 +309,7 @@ function buildGraphData({ repoInfo, contributors, forks, branches, organizations
  * ============================================================ */
 function TopSearchBar({ url, setUrl, onAnalyze, loading }) {
   return (
-    <div className="rg-search">
+    <div className="rg-search" data-reveal>
       <div className="rg-search-brand">
         <span className="rg-search-mark">◇</span>
         <span className="rg-search-title">Repository Relationship Graph</span>
@@ -815,6 +817,10 @@ export default function SocialPage() {
   const [selectedNode, setSelectedNode] = usePersistState('social3d', 'selectedNodeId', null)
   const [rawData, setRawData] = usePersistState('social3d', 'rawData', null)
   const fgRef = useRef(null)
+  const navigate = useNavigate()
+  const [repoInfoMap, setRepoInfoMap] = useState(null)
+
+  useScrollReveal()
 
   // 图谱数据（基于真实数据构建）
   const graphData = useMemo(() => {
@@ -843,6 +849,18 @@ export default function SocialPage() {
       const data = await fetchRepoGraphData(owner, repo)
       setRawData(data)
       setSelectedNode('main')
+
+      // 批量获取仓库信息（用于信息面板展示 Stars/Forks/语言/活跃度等）
+      const repoNames = []
+      if (data.repoInfo?.fullName) repoNames.push(data.repoInfo.fullName)
+      data.forks?.forEach(f => repoNames.push(f.fullName))
+      data.related?.forEach(r => repoNames.push(r.fullName))
+      if (repoNames.length) {
+        try {
+          const { map } = await batchGetRepoInfos(repoNames)
+          setRepoInfoMap(map)
+        } catch { /* 静默 */ }
+      }
     } catch (err) {
       console.error('[社交图谱] 获取数据失败:', err)
       setError(err.message || '获取数据失败，请检查网络或代理设置')
@@ -894,6 +912,7 @@ export default function SocialPage() {
   }, [rawData])
 
   return (
+    <>
     <section className="rg-page">
       <TopSearchBar url={url} setUrl={setUrl} onAnalyze={analyze} loading={loading} />
       {rawData?.repoInfo && (
@@ -936,5 +955,26 @@ export default function SocialPage() {
       )}
       <RightDetailPanel node={selectedNodeObj} />
     </section>
+    {selectedNodeObj && repoInfoMap && (
+      <div className="social-node-info" data-reveal>
+        <div className="social-node-info-header">
+          <span className="social-node-info-name">{selectedNodeObj.label || selectedNodeObj.id}</span>
+          {selectedNodeObj.data?.url && (
+            <a href={selectedNodeObj.data.url} target="_blank" rel="noreferrer" className="social-node-info-link">在 GitHub 查看 →</a>
+          )}
+        </div>
+        {selectedNodeObj.data?.fullName && repoInfoMap.get(selectedNodeObj.data.fullName) && (
+          <div className="social-node-info-stats">
+            <div className="social-node-info-stat">⭐ {repoInfoMap.get(selectedNodeObj.data.fullName).stars?.toLocaleString() || '—'}</div>
+            <div className="social-node-info-stat">🍴 {repoInfoMap.get(selectedNodeObj.data.fullName).forks?.toLocaleString() || '—'}</div>
+            <div className="social-node-info-stat">🔤 {repoInfoMap.get(selectedNodeObj.data.fullName).language || '—'}</div>
+          </div>
+        )}
+        <button className="social-node-info-analyze" onClick={() => navigate(`/analysis?url=${encodeURIComponent(selectedNodeObj.data?.fullName || selectedNodeObj.id)}`)}>
+          分析此仓库 📊
+        </button>
+      </div>
+    )}
+    </>
   )
 }

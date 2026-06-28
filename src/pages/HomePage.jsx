@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { getGlobalStats } from '../lib/github.js'
+import { useScrollReveal } from '../lib/useScrollReveal.js'
 
 const highlights = [
   { icon: '⚡', title: '开箱即用', desc: '无需配置即可搜索、分析、Fork，核心功能完全免费' },
@@ -103,33 +104,14 @@ export default function HomePage() {
   const navigate = useNavigate()
   const inputRef = useRef(null)
 
+  useScrollReveal()
+
   useEffect(() => {
     getGlobalStats().then(setStats).catch(() => {})
     const timer = setInterval(() => {
       getGlobalStats().then(s => { if (s) setStats(s) }).catch(() => {})
     }, 60 * 60 * 1000)
     return () => clearInterval(timer)
-  }, [])
-
-  // scroll reveal：元素进入视口时加 .in 触发入场动画
-  useEffect(() => {
-    const els = document.querySelectorAll('[data-reveal]')
-    if (!els.length) return
-    // 降级：不支持 IntersectionObserver 时直接全部显示
-    if (typeof IntersectionObserver === 'undefined') {
-      els.forEach(el => el.classList.add('in'))
-      return
-    }
-    const io = new IntersectionObserver((entries) => {
-      entries.forEach(e => {
-        if (e.isIntersecting) {
-          e.target.classList.add('in')
-          io.unobserve(e.target)
-        }
-      })
-    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' })
-    els.forEach(el => io.observe(el))
-    return () => io.disconnect()
   }, [])
 
   const handleSearch = (e) => {
@@ -262,6 +244,66 @@ export default function HomePage() {
               </div>
             </div>
           ))}
+        </div>
+      </section>
+
+      {/* 使用引导：交互式步骤展示 */}
+      <section className="home-guide-section" data-reveal>
+        <div className="section-inner">
+          <div className="section-header">
+            <div className="section-label">快速上手</div>
+            <h2>30 秒搞懂怎么用</h2>
+            <p>跟着下面的步骤，轻松找到你的第一个开源贡献</p>
+          </div>
+          <div className="guide-steps">
+            <div className="guide-step" data-reveal="left">
+              <div className="guide-step-num">1</div>
+              <div className="guide-step-icon">⌨️</div>
+              <div className="guide-step-content">
+                <div className="guide-step-title">输入你想找的内容</div>
+                <div className="guide-step-desc">
+                  在搜索框输入关键词，比如 <code>good first issue</code> 或 <code>Python 开源项目</code>。
+                  也可以用 <code>!issue</code> <code>!repo</code> <code>!code</code> 指定搜索类型。
+                </div>
+              </div>
+            </div>
+            <div className="guide-step-connector" />
+            <div className="guide-step" data-reveal="right">
+              <div className="guide-step-num">2</div>
+              <div className="guide-step-icon">🔍</div>
+              <div className="guide-step-content">
+                <div className="guide-step-title">浏览和筛选结果</div>
+                <div className="guide-step-desc">
+                  结果会按新手友好度排序。用左侧筛选栏按语言、标签、难度过滤。
+                  每个结果卡片上都有「分析此仓库」和「开始贡献」按钮，一键跳转。
+                </div>
+              </div>
+            </div>
+            <div className="guide-step-connector" />
+            <div className="guide-step" data-reveal="left">
+              <div className="guide-step-num">3</div>
+              <div className="guide-step-icon">📊</div>
+              <div className="guide-step-content">
+                <div className="guide-step-title">分析仓库健康度</div>
+                <div className="guide-step-desc">
+                  查看活跃度、新手友好度、维护质量等多维度评分，AI 帮你解读项目画像。
+                  分析完成后可直接跳转到贡献助手。
+                </div>
+              </div>
+            </div>
+            <div className="guide-step-connector" />
+            <div className="guide-step" data-reveal="right">
+              <div className="guide-step-num">4</div>
+              <div className="guide-step-icon">🤝</div>
+              <div className="guide-step-content">
+                <div className="guide-step-title">一键 Fork 并提交 PR</div>
+                <div className="guide-step-desc">
+                  输入仓库地址一键 Fork，选择 Issue，获取本地开发命令，
+                  最后提交 PR 到 GitHub —— 全流程引导，零门槛。
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 

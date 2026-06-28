@@ -221,7 +221,7 @@ export class IssueFetcher {
     const rawItems = result.items || []
     this._lastSearchQuery = result.searchQuery || ''
     this.pool.totalCount = result.totalCount || (rawItems.length || 0)
-    this.pool.hasMore = rawItems.length >= (opts.fetchSize || 100)
+    this.pool.hasMore = result.hasMore ?? (rawItems.length >= (opts.perPage || 30))
 
     if (!rawItems?.length) {
       this.pool.fetchedPages = nextPage

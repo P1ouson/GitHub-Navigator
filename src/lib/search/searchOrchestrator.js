@@ -52,7 +52,7 @@
 
 import { routeQuery, applyLLMIntent } from '../intent.js'
 import { searchCode, parseGitHubUrl, searchReposByOrg, getRepoInfo } from '../github.js'
-import { isLLMAvailable, analyzeIntent, analyzeIntentLight } from '../llm.js'
+import { isLLMAvailable, analyzeIntent, analyzeIntentLight, chatStream } from '../llm.js'
 import { parseInlineSyntax } from '../searchConfig.js'
 import { searchKnowledge, KB } from '../knowledge.js'
 import { askRAGStream, searchRAG } from '../rag.js'
@@ -83,7 +83,15 @@ export class SearchOrchestrator {
     this._baseQuery = ''                   // label 重搜基础 query
     this._originalIssue = null             // label 清除后恢复原始 issue
     this._lastRepoQuery = ''               // repo 重排用 query
+    this._originalRepoQuery = ''           // 原始 repo query（筛选时不变，避免重复拼接）
     this._lockedLanguages = new Set()      // 搜索词锁定的语言
+
+    // 缓存用内部快照（由 hook 回调更新）
+    this._rankedSections = null
+    this._results = {}
+    this._intent = null
+    this._activeTab = null
+    this._ragAnswer = null
   }
 
   /* ===== 只读访问器（供页面派生筛选栏数据）===== */
@@ -130,6 +138,7 @@ export class SearchOrchestrator {
       this._baseQuery = ''
       this._originalIssue = null
       this._lastRepoQuery = ''
+      this._originalRepoQuery = ''
       this.issueFetcher.pool.reset()
       this.repoFetcher.pool.reset()
 
@@ -190,6 +199,24 @@ export class SearchOrchestrator {
         if (pf.createdAfter) mergedFilters.createdAfter = pf.createdAfter
         if (pf.updatedAfter) mergedFilters.updatedAfter = pf.updatedAfter
         if (pf.sort) mergedFilters.sort = pf.sort
+      }
+
+      // 将 dateRange 转换为 createdAfter / updatedAfter
+      if (mergedFilters.dateRange && mergedFilters.dateRange !== 'all') {
+        const now = new Date()
+        if (mergedFilters.dateRange === 'week') {
+          const d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+          mergedFilters.createdAfter = d.toISOString().slice(0, 10)
+          mergedFilters.updatedAfter = d.toISOString().slice(0, 10)
+        } else if (mergedFilters.dateRange === 'month') {
+          const d = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+          mergedFilters.createdAfter = d.toISOString().slice(0, 10)
+          mergedFilters.updatedAfter = d.toISOString().slice(0, 10)
+        } else if (mergedFilters.dateRange === 'year') {
+          const d = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000)
+          mergedFilters.createdAfter = d.toISOString().slice(0, 10)
+          mergedFilters.updatedAfter = d.toISOString().slice(0, 10)
+        }
       }
 
       // ===== 阶段 3-4 合并：LLM 路由与 GitHub 搜索并行（生产标准改造 P0-1）=====
@@ -329,6 +356,7 @@ export class SearchOrchestrator {
                 if (gen !== this._gen) return
                 this._totalCount.repo = fetcher.totalCount || 0
                 this._lastRepoQuery = sourceQuery
+                this._originalRepoQuery = sourceQuery
                 const reranked = prepareRepoList(fetcher.items, sourceQuery)
                 rawResults.repo = reranked.slice(0, pageSize)
               } catch (e) {
@@ -393,6 +421,20 @@ export class SearchOrchestrator {
         // ===== Phase 1 完成，立即回 idle（不等 LLM 收窄和 autoExpand）=====
         // 用户先看到结果，LLM 收窄和扩搜在后台跑，不阻塞 UI
         if (gen === this._gen && !hadError) {
+          // 写入 sessionStorage 缓存（5min TTL）
+          const cacheKey = `search_${q}`
+          try {
+            sessionStorage.setItem(cacheKey, JSON.stringify({
+              data: {
+                rankedSections: this._rankedSections,
+                results: this._results,
+                intent: this._intent,
+                activeTab: this._activeTab,
+                ragAnswer: this._ragAnswer,
+              },
+              ts: Date.now(),
+            }))
+          } catch {}
           cb.onState({ status: 'idle', hint: '', error: null })
         }
 
@@ -471,7 +513,6 @@ export class SearchOrchestrator {
           const sorted = prepareIssueList(fetcher.issues, prefLang)
           const issueSlice = sorted.slice(0, pageSize)
           this._totalCount.issue = fetcher.totalCount || 0
-          this._originalIssue = { items: sorted, totalCount: this._totalCount.issue }
           cb.onRankedSections(prev => mergeSectionSlice(prev, 'issue', issueSlice))
         }
       })
@@ -479,7 +520,6 @@ export class SearchOrchestrator {
       // Phase 1 快速入池完成，立即更新 rankedSections（不等 enrich）
       this._totalCount.issue = fetcher.totalCount || 0
       const sorted = prepareIssueList(fetcher.issues, prefLang)
-      this._originalIssue = { items: sorted, totalCount: this._totalCount.issue }
       cb.onRankedSections(prev => mergeSectionSlice(prev, 'issue', sorted.slice(0, pageSize)))
     } catch {
       // 静默失败
@@ -573,6 +613,127 @@ export class SearchOrchestrator {
     }
   }
 
+  /* ===== Repo 筛选 API 重搜 ===== */
+
+  /**
+   * repo 筛选（语言/主题）触发 API 重搜，拼接 language:xxx / topic:xxx 条件
+   * @param {Set<string>} languages - 选中的语言集合
+   * @param {Set<string>} topics - 选中的主题集合
+   * @param {object} config
+   * @param {object} cb
+   */
+  async repoFilterSearch(languages, topics, config, cb) {
+    const baseQuery = this._originalRepoQuery || this._lastRepoQuery
+    if (!baseQuery) return
+    const pageSize = config.pagination?.issuePageSize || 20
+
+    cb.onState({ status: 'repo_filter', hint: '', error: null })
+
+    try {
+      const fetcher = this.repoFetcher
+      const langParts = [...(languages || [])].map(l => `language:${l}`)
+      const topicParts = [...(topics || [])].map(t => `topic:${t}`)
+      const filterQuery = `${baseQuery} ${[...langParts, ...topicParts].join(' ')}`
+
+      await fetcher.fetchRepos(filterQuery, {
+        fetchSize: 100,
+        perPage: 30,
+        targetCount: pageSize * 3,
+        maxGithubPages: 5,
+      })
+
+      this._totalCount.repo = fetcher.totalCount || 0
+      this._lastRepoQuery = filterQuery
+      const sorted = prepareRepoList(fetcher.items, filterQuery)
+      cb.onRankedSections(prev => mergeSectionSlice(prev, 'repo', sorted.slice(0, pageSize)))
+    } catch {
+      // 静默
+    } finally {
+      cb.onState({ status: 'idle', hint: '', error: null })
+    }
+  }
+
+  /**
+   * 清除 repo 筛选后，恢复原始搜索结果
+   * @param {object} config
+   * @param {object} cb
+   */
+  resetRepoFilter(config, cb) {
+    const baseQuery = this._originalRepoQuery || this._lastRepoQuery
+    if (!baseQuery) return
+    const pageSize = config.pagination?.issuePageSize || 20
+    const fetcher = this.repoFetcher
+    const sorted = prepareRepoList(fetcher.items, baseQuery)
+    const slice = sorted.slice(0, pageSize)
+    cb.onRankedSections(prev => mergeSectionSlice(prev, 'repo', slice))
+  }
+
+  /* ===== Issue 难度筛选 API 重搜 ===== */
+
+  /**
+   * issue 难度筛选触发 API 重搜
+   * easy → label:"good first issue"
+   * hard → label:"bug"
+   * medium → 保留客户端筛选（无良好 API 映射）
+   * @param {Set<string>} difficulties - 选中的难度集合
+   * @param {object} config
+   * @param {object} cb
+   */
+  async issueDifficultySearch(difficulties, config, cb) {
+    const baseQuery = this._baseQuery
+    if (!baseQuery || difficulties.size === 0) return
+
+    const pageSize = config.pagination?.issuePageSize || 20
+    const minLiveness = config.filters?.minLiveness || 'maintained'
+    const prefLang = config.filters?.preferredLanguage || 'any'
+
+    cb.onState({ status: 'label_search', hint: '', error: null })
+
+    try {
+      const fetcher = this.issueFetcher
+      const labelParts = []
+      let mediumOnly = false
+      for (const d of difficulties) {
+        if (d === 'easy') labelParts.push('label:"good first issue"')
+        else if (d === 'hard') labelParts.push('label:"bug"')
+        else if (d === 'medium') mediumOnly = true
+      }
+
+      // medium 无直接 API 映射，用 enhancement 近似
+      if (mediumOnly && labelParts.length === 0) {
+        labelParts.push('label:"enhancement"')
+      }
+
+      if (labelParts.length === 0) {
+        cb.onState({ status: 'idle', hint: '', error: null })
+        return
+      }
+
+      const labelQuery = `${baseQuery} ${labelParts.join(' ')}`
+
+      await fetcher.fetchIssues(labelQuery, {
+        keepSessionCache: true,
+        minLiveness,
+        fetchSize: 100,
+        targetCount: pageSize,
+        maxGithubPages: 5,
+        onEnriched: () => {
+          const sorted = prepareIssueList(fetcher.issues, prefLang)
+          const issueSlice = sorted.slice(0, pageSize)
+          this._totalCount.issue = fetcher.totalCount || 0
+          cb.onRankedSections(prev => mergeSectionSlice(prev, 'issue', issueSlice))
+        }
+      })
+      this._totalCount.issue = fetcher.totalCount || 0
+      const sorted = prepareIssueList(fetcher.issues, prefLang)
+      cb.onRankedSections(prev => mergeSectionSlice(prev, 'issue', sorted.slice(0, pageSize)))
+    } catch (e) {
+      // 静默
+    } finally {
+      cb.onState({ status: 'idle', hint: '', error: null })
+    }
+  }
+
   /* ===== Label 清除恢复 ===== */
 
   /**
@@ -606,6 +767,182 @@ export class SearchOrchestrator {
     const totalPages = Math.ceil(fetcher.items.length / ps)
     if (currentPage >= totalPages - 1 && fetcher.items.length > 0) {
       fetcher.fetchMore(3).catch(() => {})
+    }
+  }
+
+  /* ===== AI 语义筛选 + 组合高级筛选 ===== */
+
+  /**
+   * AI 语义筛选：将自然语言解析为结构化筛选条件
+   * @param {string} userInput - 用户自然语言描述
+   * @returns {Promise<object|null>} { languages, topics, labels, minStars, maxStars, difficulty }
+   */
+  async parseAiFilterIntent(userInput) {
+    if (!isLLMAvailable() || !userInput.trim()) return null
+
+    const systemPrompt = `你是一个 GitHub 筛选条件解析器。将用户的自然语言描述解析为结构化筛选条件。
+
+返回 JSON 格式（只返回 JSON，不要其他内容）：
+{
+  "languages": [],
+  "topics": [],
+  "labels": [],
+  "minStars": null,
+  "maxStars": null,
+  "difficulty": null,
+  "liveness": null,
+  "explanation": "用中文简述你理解的条件"
+}
+
+规则：
+- languages: 编程语言，如 ["Python", "JavaScript"]，没有则 []
+- topics: 仓库主题标签，如 ["web", "machine-learning"]，没有则 []
+- labels: issue 标签，如 ["good first issue", "bug"]，没有则 []
+- minStars: 最小星数，"热门"→1000，"大火"→5000，"万星"→10000，没有则 null
+- maxStars: 最大星数，"小型"→1000，"轻量"→500，没有则 null
+- difficulty: issue 难度，"简单/新手/入门"→"easy"，"困难/复杂"→"hard"，没有则 null
+- liveness: 活跃度，"活跃/最近更新"→"active"，"维护中"→"maintained"，没有则 null
+
+示例：
+"找适合新手的 Python Web 项目，活跃的" → {"languages":["Python"],"topics":["web"],"labels":["good first issue"],"minStars":null,"maxStars":null,"difficulty":"easy","liveness":"active","explanation":"搜索 Python 语言、Web 主题、有 good first issue 标签、最近活跃的项目"}
+"最近半年活跃的 React 项目，星数过千" → {"languages":["JavaScript"],"topics":["react"],"labels":[],"minStars":1000,"maxStars":null,"difficulty":null,"liveness":"active","explanation":"搜索 React 相关、星数>1000、最近活跃的 JavaScript 项目"}
+"找 bug 类 issue" → {"languages":[],"topics":[],"labels":["bug"],"minStars":null,"maxStars":null,"difficulty":"hard","liveness":null,"explanation":"搜索 bug 标签的 issue"}`
+
+    try {
+      let fullContent = ''
+      await chatStream(systemPrompt, userInput, (chunk) => {
+        fullContent += chunk
+      }, 512)
+
+      const jsonStr = fullContent.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim()
+      const parsed = JSON.parse(jsonStr)
+      return {
+        languages: Array.isArray(parsed.languages) ? parsed.languages : [],
+        topics: Array.isArray(parsed.topics) ? parsed.topics : [],
+        labels: Array.isArray(parsed.labels) ? parsed.labels : [],
+        minStars: typeof parsed.minStars === 'number' ? parsed.minStars : null,
+        maxStars: typeof parsed.maxStars === 'number' ? parsed.maxStars : null,
+        difficulty: parsed.difficulty || null,
+        liveness: parsed.liveness || null,
+        explanation: parsed.explanation || '',
+      }
+    } catch (e) {
+      console.warn('[AI筛选] 解析失败:', e.message)
+      return null
+    }
+  }
+
+  /**
+   * 组合 repo 筛选（语言 + 主题 + star + 活跃度）
+   * @param {object} filters - { languages, topics, minStars, maxStars, liveness }
+   * @param {object} config
+   * @param {object} cb
+   */
+  async combinedRepoFilterSearch(filters, config, cb) {
+    const baseQuery = this._originalRepoQuery || this._lastRepoQuery
+    if (!baseQuery) return
+    const pageSize = config.pagination?.issuePageSize || 20
+
+    cb.onState({ status: 'repo_filter', hint: '', error: null })
+
+    try {
+      const fetcher = this.repoFetcher
+      const parts = []
+
+      if (filters.languages?.size > 0) {
+        for (const l of filters.languages) parts.push(`language:${l}`)
+      }
+      if (filters.topics?.size > 0) {
+        for (const t of filters.topics) parts.push(`topic:${t}`)
+      }
+      if (filters.minStars > 0) {
+        parts.push(`stars:>=${filters.minStars}`)
+      }
+      if (filters.maxStars > 0) {
+        parts.push(`stars:<=${filters.maxStars}`)
+      }
+
+      const filterQuery = `${baseQuery} ${parts.join(' ')}`
+
+      const livenessMap = { active: 'active', maintained: 'maintained', inactive: 'inactive' }
+      const minLiveness = livenessMap[filters.liveness] || 'maintained'
+
+      await fetcher.fetchRepos(filterQuery, {
+        fetchSize: 100,
+        perPage: 30,
+        targetCount: pageSize * 3,
+        maxGithubPages: 5,
+        minLiveness,
+      })
+
+      this._totalCount.repo = fetcher.totalCount || 0
+      this._lastRepoQuery = filterQuery
+      const sorted = prepareRepoList(fetcher.items, filterQuery)
+      cb.onRankedSections(prev => mergeSectionSlice(prev, 'repo', sorted.slice(0, pageSize)))
+    } catch {
+      // 静默
+    } finally {
+      cb.onState({ status: 'idle', hint: '', error: null })
+    }
+  }
+
+  /**
+   * 组合 issue 筛选（标签 + 难度 + star + 活跃度）
+   * @param {object} filters - { labels, difficulty, minStars, maxStars, liveness }
+   * @param {object} config
+   * @param {object} cb
+   */
+  async combinedIssueFilterSearch(filters, config, cb) {
+    const baseQuery = this._baseQuery
+    if (!baseQuery) return
+    const pageSize = config.pagination?.issuePageSize || 20
+    const prefLang = config.filters?.preferredLanguage || 'any'
+
+    cb.onState({ status: 'label_search', hint: '', error: null })
+
+    try {
+      const fetcher = this.issueFetcher
+      const labelParts = []
+
+      if (filters.labels?.size > 0) {
+        for (const l of filters.labels) labelParts.push(`label:"${l}"`)
+      }
+      if (filters.difficulty === 'easy') {
+        labelParts.push('label:"good first issue"')
+      } else if (filters.difficulty === 'hard') {
+        labelParts.push('label:"bug"')
+      }
+
+      const labelQuery = labelParts.length > 0
+        ? `${baseQuery} ${labelParts.join(' ')}`
+        : baseQuery
+
+      const livenessMap = { active: 'active', maintained: 'maintained', inactive: 'inactive' }
+      const minLiveness = livenessMap[filters.liveness] || 'maintained'
+
+      await fetcher.fetchIssues(labelQuery, {
+        keepSessionCache: true,
+        minLiveness,
+        fetchSize: 100,
+        targetCount: pageSize,
+        maxGithubPages: 5,
+        stars: filters.minStars > 0 ? filters.minStars : undefined,
+        maxStars: filters.maxStars > 0 ? filters.maxStars : undefined,
+        onEnriched: () => {
+          const sorted = prepareIssueList(fetcher.issues, prefLang)
+          const issueSlice = sorted.slice(0, pageSize)
+          this._totalCount.issue = fetcher.totalCount || 0
+          cb.onRankedSections(prev => mergeSectionSlice(prev, 'issue', issueSlice))
+        }
+      })
+
+      this._totalCount.issue = fetcher.totalCount || 0
+      const sorted = prepareIssueList(fetcher.issues, prefLang)
+      cb.onRankedSections(prev => mergeSectionSlice(prev, 'issue', sorted.slice(0, pageSize)))
+    } catch {
+      // 静默
+    } finally {
+      cb.onState({ status: 'idle', hint: '', error: null })
     }
   }
 

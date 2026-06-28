@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { getContributions, getContributionStats } from '../lib/db.js'
 import { matchKeyword } from '../lib/keywordMatch.js'
+import { useScrollReveal } from '../lib/useScrollReveal.js'
+import { syncPRStatus } from '../lib/github.js'
 
 const ACHIEVEMENTS = [
   { key: 'first_fork', label: '初次 Fork', desc: '完成第一次仓库 Fork', icon: '🔱' },
@@ -256,12 +258,85 @@ export default function GrowthPage() {
   const [achievements, setAchievements] = useState([])
   const [selectedSkill, setSelectedSkill] = useState(null)
   const [expandedStage, setExpandedStage] = useState(null)
+  const [exporting, setExporting] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [syncMsg, setSyncMsg] = useState('')
+
+  useScrollReveal()
 
   useEffect(() => { loadData() }, [])
 
   async function loadData() {
     const [s, t] = await Promise.all([getContributionStats(), getContributions()])
     setStats(s); setTimeline(t); setAchievements(computeAchievements(s))
+  }
+
+  async function handleExport(format) {
+    setExporting(true)
+    try {
+      const stats = await getContributionStats()
+      const all = await getContributions()
+      const content = format === 'json'
+        ? JSON.stringify({ stats, timeline: all, exportedAt: new Date().toISOString() }, null, 2)
+        : buildMarkdownExport(stats, all)
+      const blob = new Blob([content], { type: format === 'json' ? 'application/json' : 'text/markdown' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `github-contributions-${new Date().toISOString().slice(0, 10)}.${format}`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('Export failed', e)
+    }
+    setExporting(false)
+  }
+
+  async function handleSync() {
+    setSyncing(true); setSyncMsg('')
+    try {
+      const result = await syncPRStatus()
+      setSyncMsg(result.message)
+      if (result.synced > 0) await loadData() // 重新加载数据
+    } catch (e) {
+      setSyncMsg(`同步失败：${e.message}`)
+    }
+    setSyncing(false)
+  }
+
+  function buildMarkdownExport(stats, timeline) {
+    const lines = [
+      '# GitHub 贡献履历',
+      '',
+      `> 导出时间：${new Date().toLocaleString('zh-CN')}`,
+      '',
+      '## 统计概览',
+      '',
+      `- 总贡献数：${stats.total}`,
+      `- Fork 数：${stats.forks}`,
+      `- PR 数：${stats.prs}（合并 ${stats.mergedPRs}，合并率 ${stats.mergeRate}%）`,
+      `- 涉及仓库：${stats.repos}`,
+      `- 新增代码行：${stats.totalAdditions}`,
+      `- 删除代码行：${stats.totalDeletions}`,
+      `- 活跃月数：${stats.activeMonths}`,
+      '',
+      '## 贡献时间线',
+      '',
+      '| 日期 | 类型 | 仓库 | 详情 | 状态 |',
+      '|------|------|------|------|------|',
+      ...timeline.map(t => {
+        const date = t.createdAt ? new Date(t.createdAt).toLocaleDateString('zh-CN') : '-'
+        const type = { fork: 'Fork', pr: 'PR', issue: 'Issue' }[t.type] || t.type
+        const status = t.status || '-'
+        return `| ${date} | ${type} | ${t.repo || '-'} | ${t.detail || '-'} | ${status} |`
+      }),
+      '',
+      '## 涉及语言',
+      '',
+      ...([...new Set(timeline.filter(t => t.language).map(t => t.language))].map(l => `- ${l}`)),
+      '',
+    ]
+    return lines.join('\n')
   }
 
   const earnedCount = achievements.filter(a => a.earned).length
@@ -278,14 +353,14 @@ export default function GrowthPage() {
   return (
     <section className="section">
       <div className="section-inner">
-        <div className="section-header">
+        <div className="section-header" data-reveal>
           <div className="section-label">模块四</div>
           <h2>成长中心</h2>
           <p>记录每一次开源贡献，追踪你的成长轨迹</p>
         </div>
 
         {/* 当前阶段 + 下一成就 */}
-        <div className="growth-current">
+        <div className="growth-current" data-reveal>
           <div className="current-phase">
             <span className="current-phase-badge">{currentStage.label}</span>
             <span className="current-phase-desc">{currentStage.desc}</span>
@@ -309,6 +384,20 @@ export default function GrowthPage() {
             <StatCard value={stats.repos} label="参与仓库" />
           </div>
         )}
+
+        {/* 导出贡献履历 */}
+        <div className="growth-actions" data-reveal>
+          <button className="growth-export-btn" onClick={() => handleExport('md')} disabled={exporting}>
+            📥 导出 Markdown
+          </button>
+          <button className="growth-export-btn" onClick={() => handleExport('json')} disabled={exporting}>
+            📥 导出 JSON
+          </button>
+          <button className="growth-export-btn" onClick={handleSync} disabled={syncing}>
+            {syncing ? '🔄 同步中...' : '🔄 同步 GitHub PR 状态'}
+          </button>
+        </div>
+        {syncMsg && <div className="sync-msg" style={{textAlign:'center',fontSize:'13px',color:'var(--muted)',marginTop:'8px'}}>{syncMsg}</div>}
 
         {/* 贡献日历 */}
         <div className="growth-section-title">📅 贡献日历</div>

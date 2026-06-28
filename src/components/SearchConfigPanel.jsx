@@ -84,6 +84,7 @@ export default function SearchConfigPanel({ config, onChange, onApply }) {
                 <select className="config-select" value={config.filters.minStars} onChange={e => setFilter('minStars', Number(e.target.value))}>
                   <option value={0}>不限</option>
                   <option value={10}>10+</option>
+                  <option value={20}>20+</option>
                   <option value={50}>50+</option>
                   <option value={100}>100+</option>
                   <option value={500}>500+</option>

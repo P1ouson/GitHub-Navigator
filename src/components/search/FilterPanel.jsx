@@ -1,24 +1,22 @@
 /**
  * 筛选面板子组件
  *
- * 从 SearchPage 内嵌组件迁出：
- *   - FilterPanel: 通用筛选面板（issue + repo 共用）
- *   - FilterSection: 单个筛选分区
- *
  * 纯 UI 组件，只依赖传入的 sections 配置，不依赖 orchestrator。
  */
 
 /** 通用筛选面板（issue + repo 共用） */
 export function FilterPanel({ type, onClearAll, sections }) {
   const hasActiveFilter = sections.some(s => s.selected.size > 0)
+
   return (
     <div className="filter-panel">
       <div className="filter-panel-header">
-        <span className="filter-panel-title">🔍 筛选</span>
+        <span className="filter-panel-title">筛选</span>
         {hasActiveFilter && (
           <button className="filter-panel-clear" onClick={onClearAll}>清除全部</button>
         )}
       </div>
+
       {sections.map(section => (
         <FilterSection key={section.title} section={section} />
       ))}

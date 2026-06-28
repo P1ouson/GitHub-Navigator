@@ -59,11 +59,11 @@ export function useSearchOrchestrator() {
   // 回调集合（稳定引用）
   const cb = useMemo(() => ({
     onState: (partial) => setState(prev => ({ ...prev, ...partial })),
-    onResults: setResults,
-    onRankedSections: setRankedSections,
-    onIntent: setIntent,
-    onActiveTab: setActiveTab,
-    onRagAnswer: setRagAnswer,
+    onResults: (results) => { orch._results = results; setResults(results); },
+    onRankedSections: (sections) => { orch._rankedSections = sections; setRankedSections(sections); },
+    onIntent: (intent) => { orch._intent = intent; setIntent(intent); },
+    onActiveTab: (tab) => { orch._activeTab = tab; setActiveTab(tab); },
+    onRagAnswer: (answer) => { orch._ragAnswer = answer; setRagAnswer(answer); },
     onRagLoading: (loading) => setState(prev => ({ ...prev, ragLoading: loading })),
   }), [setResults, setRankedSections, setIntent, setActiveTab, setRagAnswer])
 
@@ -88,9 +88,61 @@ export function useSearchOrchestrator() {
     return orch.fetchMoreForIssueFilter(config, cb)
   }, [orch, cb])
 
+  const repoFilterSearch = useCallback((languages, topics, config) => {
+    return orch.repoFilterSearch(languages, topics, config, cb)
+  }, [orch, cb])
+
+  const resetRepoFilter = useCallback((config) => {
+    return orch.resetRepoFilter(config, cb)
+  }, [orch, cb])
+
+  const issueDifficultySearch = useCallback((difficulties, config) => {
+    return orch.issueDifficultySearch(difficulties, config, cb)
+  }, [orch, cb])
+
+  const resetLabelFilter = useCallback((config) => {
+    return orch.resetLabelFilter(config, cb)
+  }, [orch, cb])
+
+  const parseAiFilterIntent = useCallback((userInput) => {
+    return orch.parseAiFilterIntent(userInput)
+  }, [orch])
+
+  const combinedRepoFilterSearch = useCallback((filters, config) => {
+    return orch.combinedRepoFilterSearch(filters, config, cb)
+  }, [orch, cb])
+
+  const combinedIssueFilterSearch = useCallback((filters, config) => {
+    return orch.combinedIssueFilterSearch(filters, config, cb)
+  }, [orch, cb])
+
   const preloadIfNeeded = useCallback((tab, currentPage, config) => {
     return orch.preloadIfNeeded(tab, currentPage, config)
   }, [orch, cb])
+
+  const restoreFromCache = useCallback((data) => {
+    if (data.rankedSections) {
+      orch._rankedSections = data.rankedSections
+      setRankedSections(data.rankedSections)
+    }
+    if (data.results) {
+      orch._results = data.results
+      setResults(data.results)
+    }
+    if (data.intent != null) {
+      orch._intent = data.intent
+      setIntent(data.intent)
+    }
+    if (data.activeTab != null) {
+      orch._activeTab = data.activeTab
+      setActiveTab(data.activeTab)
+    }
+    if (data.ragAnswer != null) {
+      orch._ragAnswer = data.ragAnswer
+      setRagAnswer(data.ragAnswer)
+    }
+    setState(prev => ({ ...prev, status: 'idle', hint: '', error: null }))
+  }, [])
 
   // ===== 派生数据（供页面筛选栏）=====
   const issueItems = orch.issueItems
@@ -109,10 +161,20 @@ export function useSearchOrchestrator() {
     state,
     // 操作
     search,
+    labelSearch,
+    resetLabelFilter,
     loadMore,
     fetchMoreForFilter,
     fetchMoreForIssueFilter,
+    repoFilterSearch,
+    resetRepoFilter,
+    issueDifficultySearch,
+    resetLabelFilter,
+    parseAiFilterIntent,
+    combinedRepoFilterSearch,
+    combinedIssueFilterSearch,
     preloadIfNeeded,
+    restoreFromCache,
     setActiveTab,
     setRankedSections,
     // 派生数据

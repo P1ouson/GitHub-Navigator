@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { searchRepositories } from '../lib/github.js'
 import { chatStream } from '../lib/llm.js'
 import { usePersistState } from '../lib/pageCache.js'
+import { useScrollReveal } from '../lib/useScrollReveal.js'
 
 // 随机语言池
 const LANG_POOL = [
@@ -42,6 +43,8 @@ export default function ExplorePage() {
   const [aiLoading, setAiLoading] = useState(false)
   const [tag, setTag] = usePersistState('explore', 'tag', '')
   const [error, setError] = useState('')
+
+  useScrollReveal()
 
   const fetchRandom = useCallback(async () => {
     setLoading(true)
@@ -134,14 +137,14 @@ export default function ExplorePage() {
   return (
     <section className="section explore-page">
       <div className="section-inner" style={{ textAlign: 'center' }}>
-        <div className="explore-hero">
+        <div className="explore-hero" data-reveal>
           <h1 className="explore-title">开源漫游</h1>
           <p className="explore-subtitle">
             像在开源世界里散步，你不知道下一个遇见的是什么
           </p>
         </div>
 
-        <div className="explore-card-wrap">
+        <div className="explore-card-wrap" data-reveal="scale">
           {error && (
             <div className="explore-error">
               <p>{error}</p>
@@ -205,7 +208,7 @@ export default function ExplorePage() {
           )}
         </div>
 
-        <div className="explore-how">
+        <div className="explore-how" data-reveal>
           <h3>怎么玩的？</h3>
           <p>
             每次点击，系统会随机选一种语言、一个话题、一个 star 量级，从 GitHub 拉一批仓库，

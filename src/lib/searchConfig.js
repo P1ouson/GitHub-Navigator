@@ -14,7 +14,7 @@ export const DEFAULT_CONFIG = {
     language: '',
     contentLang: 'en',
     minLiveness: 'maintained',
-    minStars: 0,
+    minStars: 20,
     labels: '',
     dateRange: 'all',
   },

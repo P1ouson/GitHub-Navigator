@@ -680,3 +680,52 @@ export async function fetchReadmeContent(owner, repo) {
     throw err
   }
 }
+
+import { getContributions, updateContribution } from './db.js'
+
+/** 同步本地 PR 记录的状态：从 GitHub 拉取最新状态（merged/closed/open） */
+export async function syncPRStatus() {
+  const contributions = await getContributions()
+  const prs = contributions.filter(c => c.type === 'pr' && c.repo && c.status !== 'merged')
+  if (!prs.length) return { synced: 0, message: '没有需要同步的 PR' }
+
+  const results = []
+  const octokit = await getOctokit()
+  if (!octokit) return { synced: 0, message: '请先配置 GitHub Token' }
+
+  for (const pr of prs) {
+    try {
+      const [owner, repo] = pr.repo.split('/')
+      if (!owner || !repo) continue
+
+      // 从 detail 中提取 PR 编号（格式：Fix #123: ... 或 PR #123）
+      const prNum = pr.issueNumber || (pr.detail || '').match(/#(\d+)/)?.[1]
+      if (!prNum) continue
+
+      const { data } = await octokit.rest.pulls.get({
+        owner, repo, pull_number: Number(prNum),
+      })
+
+      const patch = {}
+      if (data.merged) {
+        patch.status = 'merged'
+      } else if (data.state === 'closed') {
+        patch.status = 'closed'
+      } else {
+        patch.status = 'open'
+      }
+      patch.additions = data.additions || 0
+      patch.deletions = data.deletions || 0
+
+      await updateContribution(pr.id, patch)
+      results.push({ repo: pr.repo, number: prNum, status: patch.status })
+    } catch (e) {
+      // 404 或权限问题，跳过
+      results.push({ repo: pr.repo, error: e.message?.slice(0, 80) })
+    }
+  }
+
+  const merged = results.filter(r => r.status === 'merged').length
+  const updated = results.filter(r => r.status).length
+  return { synced: updated, merged, total: results.length, message: `已更新 ${updated}/${results.length} 条 PR（${merged} 已合并）` }
+}
