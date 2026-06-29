@@ -5690,7 +5690,37 @@ to {
 .explore-subtitle {
   color:var(--muted);
   font-size:15px;
-  margin:0}
+  margin:0 0 16px}
+
+.explore-mode-toggle {
+  display:flex;
+  gap:8px;
+  justify-content:center}
+
+.explore-mode-btn {
+  padding:6px 18px;
+  border-radius:20px;
+  border:1.5px solid var(--border);
+  background:var(--card);
+  color:var(--muted);
+  font-size:13px;
+  cursor:pointer;
+  transition:all .2s}
+
+.explore-mode-btn:hover {
+  border-color:var(--accent);
+  color:var(--accent)}
+
+.explore-mode-btn.active {
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+  font-weight:600}
+
+.explore-empty-hint {
+  color:var(--accent);
+  font-size:13px;
+  margin:-8px 0 16px}
 
 .explore-card-wrap {
   min-height:260px;
@@ -6078,6 +6108,217 @@ to {
   background:#EAE4D8;
   border-color:#8C7B6B;
   color:#1A1A2E;
+}
+
+/* ===== 节点搜索 ===== */
+.rg-search-box {
+  position:relative;
+}
+.rg-search-input-sm {
+  width:100%;
+  padding:8px 10px;
+  background:#F5F5F2;
+  border:1px solid var(--border);
+  border-radius:6px;
+  font-size:12px;
+  font-family:inherit;
+  color:#1A1A2E;
+  outline:none;
+  transition:border-color 0.2s;
+  box-sizing:border-box;
+}
+.rg-search-input-sm:focus {
+  border-color:#8C7B6B;
+}
+.rg-search-input-sm::placeholder {
+  color:var(--textDim);
+}
+.rg-search-results {
+  margin-top:6px;
+  background:#FFFFFF;
+  border:1px solid var(--border);
+  border-radius:6px;
+  overflow:hidden;
+  max-height:240px;
+  overflow-y:auto;
+}
+.rg-search-result-item {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 10px;
+  cursor:pointer;
+  font-size:12px;
+  transition:background 0.15s;
+}
+.rg-search-result-item:hover {
+  background:#F5F5F2;
+}
+.rg-search-result-dot {
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  flex-shrink:0;
+}
+.rg-search-result-name {
+  flex:1;
+  color:#1A1A2E;
+  font-weight:500;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.rg-search-result-type {
+  color:var(--textDim);
+  font-size:11px;
+  flex-shrink:0;
+}
+.rg-search-no-results {
+  margin-top:6px;
+  padding:8px 10px;
+  font-size:12px;
+  color:var(--textDim);
+  text-align:center;
+  background:#F5F5F2;
+  border-radius:6px;
+}
+
+/* ===== 互动导览 ===== */
+.rg-tour-start {
+  text-align:center;
+  padding:8px 0;
+}
+.rg-tour-start-icon {
+  font-size:28px;
+  color:#8C7B6B;
+  margin-bottom:8px;
+  animation: tourPointRight 1.5s ease-in-out infinite;
+}
+@keyframes tourPointRight {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(6px); }
+}
+.rg-tour-start-text {
+  font-size:12px;
+  color:var(--textSub);
+  margin-bottom:10px;
+  line-height:1.5;
+}
+.rg-tour-start-btn {
+  width:100%;
+  text-align:center;
+  background:#4CAF50 !important;
+  color:#fff !important;
+  border:none !important;
+  font-weight:600;
+}
+.rg-tour-start-btn:hover {
+  background:#43A047 !important;
+  color:#fff !important;
+}
+
+/* 导览进行中 */
+.rg-tour-active {
+  padding:4px 0;
+}
+.rg-tour-progress {
+  display:flex;
+  gap:6px;
+  margin-bottom:12px;
+  justify-content:center;
+}
+.rg-tour-dot {
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:var(--border);
+  transition:all 0.3s;
+}
+.rg-tour-dot.done {
+  background:#4CAF50;
+  transform:scale(1.2);
+}
+.rg-tour-dot.current {
+  background:#FFA000;
+  animation: tourPulse 1s ease-in-out infinite;
+}
+@keyframes tourPulse {
+  0%, 100% { transform:scale(1); box-shadow: 0 0 0 0 rgba(255,160,0,0.4); }
+  50% { transform:scale(1.5); box-shadow: 0 0 6px 2px rgba(255,160,0,0.3); }
+}
+.rg-tour-step-title {
+  font-size:13px;
+  font-weight:600;
+  color:#1A1A2E;
+  margin-bottom:6px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.rg-tour-step-num {
+  font-size:11px;
+  color:var(--textDim);
+  background:#F5F5F2;
+  padding:2px 6px;
+  border-radius:4px;
+  font-weight:500;
+}
+.rg-tour-step-desc {
+  font-size:12px;
+  color:var(--textSub);
+  line-height:1.5;
+  margin-bottom:10px;
+}
+.rg-tour-actions {
+  display:flex;
+  gap:6px;
+}
+.rg-tour-next-btn {
+  flex:1;
+  text-align:center;
+  font-size:11px;
+  color:var(--textDim);
+}
+.rg-tour-finish-btn {
+  width:100%;
+  text-align:center;
+  background:#4CAF50 !important;
+  color:#fff !important;
+  border:none !important;
+  font-weight:600;
+}
+.rg-tour-finish-btn:hover {
+  background:#43A047 !important;
+  color:#fff !important;
+}
+
+/* 导览完成 */
+.rg-tour-completed {
+  text-align:center;
+  padding:8px 0;
+}
+.rg-tour-check {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:32px;
+  height:32px;
+  border-radius:50%;
+  background:#4CAF50;
+  color:#fff;
+  font-size:18px;
+  margin-bottom:8px;
+}
+.rg-tour-completed-text {
+  font-size:13px;
+  color:#1A1A2E;
+  font-weight:600;
+  margin-bottom:10px;
+}
+.rg-tour-restart-btn {
+  width:100%;
+  text-align:center;
+  font-size:12px;
 }
 
 /* ===== 3D 图谱区域 ===== */

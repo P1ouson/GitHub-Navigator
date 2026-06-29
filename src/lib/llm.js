@@ -11,15 +11,16 @@
  */
 
 import { getSetting, setSetting } from './db.js'
+import { DEFAULT_SILICONFLOW_KEY } from './keys.js'
 
 const SILICONFLOW_BASE = 'https://api.siliconflow.cn/v1'
 // 默认模型：GLM-4-9B（稠密 9B，~1s，RAG/翻译/画像/漫游主力）
 const DEFAULT_LLM_MODEL = 'THUDM/GLM-4-9B-0414'
 // L3 轻量模型（意图分类专用，A3B 极短 prompt 场景最快）
-const LIGHT_LLM_MODEL = 'Qwen/Qwen3-30B-A3B-Instruct-2507'
+export const LIGHT_LLM_MODEL = 'Qwen/Qwen3-30B-A3B-Instruct-2507'
 // L4 全量模型（同义词扩展兜底，L3 失败时触发）
 const FULL_LLM_MODEL = 'THUDM/GLM-4-9B-0414'
-const DEFAULT_API_KEY = 'sk-huzesdqsfacrwehmnoaaezatkcqzrcvdckwwqujjgqethywx'
+const DEFAULT_API_KEY = DEFAULT_SILICONFLOW_KEY
 
 let llmProvider = null
 
@@ -223,10 +224,10 @@ export function createSiliconFlowAdapter({ apiKey, model }) {
  * @param {number} maxTokens 最大 tokens
  * @returns {Promise<string>} 完整内容
  */
-export async function chatStream(systemPrompt, userMessage, onChunk, maxTokens = 1024) {
+export async function chatStream(systemPrompt, userMessage, onChunk, maxTokens = 1024, model = DEFAULT_LLM_MODEL) {
   if (!isLLMAvailable()) return null
   const apiKey = await getSetting('siliconflow_api_key') || DEFAULT_API_KEY
-  return _chat({ apiKey, model: DEFAULT_LLM_MODEL, systemPrompt, userMessage, maxTokens, timeout: 30000, stream: true, onChunk })
+  return _chat({ apiKey, model, systemPrompt, userMessage, maxTokens, timeout: 30000, stream: true, onChunk })
 }
 
 /**

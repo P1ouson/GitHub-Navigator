@@ -290,7 +290,7 @@ export default function AnalysisPage() {
             onKeyDown={e => e.key === 'Enter' && (activeTab === 'translate' ? translateReadme() : analyze())}
             placeholder="owner/repo 或 https://github.com/owner/repo"
           />
-          <button className="search-box-btn" onClick={activeTab === 'translate' ? () => translateReadme() : analyze} disabled={loading || transLoading}>
+          <button className="search-box-btn" onClick={activeTab === 'translate' ? () => translateReadme() : () => analyze()} disabled={loading || transLoading}>
             {loading ? '正在采集仓库数据' : transLoading ? '翻译中...' : activeTab === 'translate' ? '翻译 README' : '分析'}
           </button>
         </div>

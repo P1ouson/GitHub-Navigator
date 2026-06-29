@@ -198,19 +198,23 @@ export function KnowledgeSection({ items }) {
       <h3 className="result-section-title">
         📚 知识库 <span className="result-count">{items.length} 条相关结果</span>
       </h3>
-      {items.map(item => (
-        <details key={item.id} className="knowledge-card">
-          <summary className="knowledge-title">
-            <span>{item.title}</span>
-            <span className="knowledge-category">{item.category}</span>
-          </summary>
-          <div className="knowledge-body">
-            {item.body.split('\n').map((line, i) => (
-              <p key={i} style={line.startsWith('•') ? { paddingLeft: '1em', textIndent: '-1em', marginBottom: 4 } : { marginBottom: 8 }}>{line}</p>
-            ))}
-          </div>
-        </details>
-      ))}
+      {items.map((item, i) => {
+        const content = item.body || item.text || ''
+        const source = item.source || item.category || ''
+        return (
+          <details key={item.id || `kb-${i}`} className="knowledge-card">
+            <summary className="knowledge-title">
+              <span>{item.title}</span>
+              <span className="knowledge-category">{source}</span>
+            </summary>
+            <div className="knowledge-body">
+              {content.split('\n').map((line, j) => (
+                <p key={j} style={line.startsWith('•') ? { paddingLeft: '1em', textIndent: '-1em', marginBottom: 4 } : { marginBottom: 8 }}>{line}</p>
+              ))}
+            </div>
+          </details>
+        )
+      })}
     </div>
   )
 }

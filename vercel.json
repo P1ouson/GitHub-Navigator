@@ -5,6 +5,8 @@
     { "source": "/api/searx1/:path*", "destination": "https://searx.be/:path*" },
     { "source": "/api/searx2/:path*", "destination": "https://search.sapti.me/:path*" },
     { "source": "/api/searx3/:path*", "destination": "https://search.ononoki.org/:path*" },
+    { "source": "/api/devdocs/:path*", "destination": "https://documents.devdocs.io/:path*" },
+    { "source": "/api/ghblog/:path*", "destination": "https://github.blog/:path*" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

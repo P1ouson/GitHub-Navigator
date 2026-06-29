@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
-import { parseRepoUrl, getOctokit, safeGithub, getGitHubConfig, batchGetRepoInfos } from '../lib/github.js'
+import { parseRepoUrl, getOctokit, safeGithub, getGitHubConfig } from '../lib/github.js'
 import { usePersistState } from '../lib/pageCache.js'
 import { useScrollReveal } from '../lib/useScrollReveal.js'
 import ForceGraph3D from 'react-force-graph-3d'
@@ -360,7 +360,7 @@ function StatsOverview({ repo, contributors, branches }) {
 /* ============================================================
  * 左侧控制面板：图例 + 操作说明 + 功能按钮
  * ============================================================ */
-function LeftControlPanel({ onReset, onFocus, onExportImage, onExportJson }) {
+function LeftControlPanel({ onReset, onFocus, onExportImage, onExportJson, rawData, highlightForks, highlightRelated, onToggleForks, onToggleRelated, searchQuery, onSearchChange, onSearchSelect, searchResults }) {
   const legend = [
     { color: NODE_COLOR.main, label: '主仓库' },
     { color: NODE_COLOR.contributors, label: '贡献者' },
@@ -369,10 +369,68 @@ function LeftControlPanel({ onReset, onFocus, onExportImage, onExportJson }) {
     { color: NODE_COLOR.organizations, label: '组织' },
     { color: NODE_COLOR.related, label: '关联仓库' },
   ]
+
   return (
     <aside className="rg-left">
+      {/* 节点搜索 */}
+      {rawData?.repoInfo && (
+        <div className="rg-panel-section">
+          <div className="rg-panel-title">节点搜索</div>
+          <div className="rg-search-box">
+            <input
+              className="rg-search-input-sm"
+              type="text"
+              placeholder="搜索节点名称…"
+              value={searchQuery}
+              onChange={e => onSearchChange(e.target.value)}
+            />
+            {searchQuery && searchResults.length > 0 && (
+              <div className="rg-search-results">
+                {searchResults.slice(0, 8).map(r => (
+                  <div
+                    key={r.id}
+                    className="rg-search-result-item"
+                    onClick={() => onSearchSelect(r.id)}
+                  >
+                    <span className="rg-search-result-dot" style={{ background: r.type === 'main' ? NODE_COLOR.main : r.type === 'cluster' ? NODE_COLOR[r.category] : NODE_COLOR[r.type] || NODE_COLOR.related }} />
+                    <span className="rg-search-result-name">{r.label}</span>
+                    <span className="rg-search-result-type">{r.typeLabel}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {searchQuery && searchResults.length === 0 && (
+              <div className="rg-search-no-results">未找到匹配节点</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 高亮工具 */}
+      {rawData?.repoInfo && (
+        <div className="rg-panel-section">
+          <div className="rg-panel-title">高亮工具</div>
+          <div className="rg-actions">
+            <button
+              className="rg-action-btn"
+              onClick={onToggleForks}
+              style={{ background: highlightForks ? '#4CAF50' : undefined, color: highlightForks ? '#fff' : undefined, border: highlightForks ? 'none' : undefined }}
+            >
+              {highlightForks ? '✅ Fork 高亮中' : '📍 高亮 Fork 仓库'}
+            </button>
+            <button
+              className="rg-action-btn"
+              onClick={onToggleRelated}
+              style={{ background: highlightRelated ? '#4CAF50' : undefined, color: highlightRelated ? '#fff' : undefined, border: highlightRelated ? 'none' : undefined }}
+            >
+              {highlightRelated ? '✅ 关联仓库高亮中' : '📍 高亮关联仓库'}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="rg-panel-section">
-        <div className="rg-panel-title">Legend</div>
+        <div className="rg-panel-title">图例</div>
         <div className="rg-legend">
           {legend.map(l => (
             <div className="rg-legend-item" key={l.label}>
@@ -384,17 +442,18 @@ function LeftControlPanel({ onReset, onFocus, onExportImage, onExportJson }) {
       </div>
 
       <div className="rg-panel-section">
-        <div className="rg-panel-title">Controls</div>
+        <div className="rg-panel-title">操作</div>
         <div className="rg-controls-hint">
           <div className="rg-hint-row"><kbd>拖拽</kbd>旋转视角</div>
           <div className="rg-hint-row"><kbd>滚轮</kbd>缩放图谱</div>
           <div className="rg-hint-row"><kbd>Shift</kbd>+<kbd>拖拽</kbd>平移</div>
           <div className="rg-hint-row"><kbd>点击</kbd>查看详情</div>
+          <div className="rg-hint-row"><kbd>双击</kbd>跳转分析页</div>
         </div>
       </div>
 
       <div className="rg-panel-section">
-        <div className="rg-panel-title">Actions</div>
+        <div className="rg-panel-title">动作</div>
         <div className="rg-actions">
           <button className="rg-action-btn" onClick={onReset}>重置视角</button>
           <button className="rg-action-btn" onClick={onFocus}>聚焦主仓库</button>
@@ -409,7 +468,7 @@ function LeftControlPanel({ onReset, onFocus, onExportImage, onExportJson }) {
 /* ============================================================
  * 3D 图谱画布
  * ============================================================ */
-function Graph3DCanvas({ graphData, onNodeClick, onNodeHover, hoveredNode, selectedNode, fgRef }) {
+function Graph3DCanvas({ graphData, onNodeClick, onNodeHover, hoveredNode, selectedNode, fgRef, highlightForks, highlightRelated, searchQuery }) {
   const containerRef = useRef(null)
   const [dims, setDims] = useState({ width: 800, height: 600 })
 
@@ -459,7 +518,7 @@ function Graph3DCanvas({ graphData, onNodeClick, onNodeHover, hoveredNode, selec
     scene.add(pointLight)
   }, [fgRef])
 
-  // 节点颜色（用颜色变化模拟选中/暗化效果）
+  // 节点颜色（用颜色变化模拟选中/暗化效果，支持高亮模式、搜索筛选）
   const nodeColor = useCallback(node => {
     const baseColor = node.type === 'main'
       ? NODE_COLOR.main
@@ -467,7 +526,23 @@ function Graph3DCanvas({ graphData, onNodeClick, onNodeHover, hoveredNode, selec
         ? NODE_COLOR[node.category]
         : NODE_COLOR[node.type] || NODE_COLOR.related
     const isHl = hoveredNode?.id === node.id || selectedNode?.id === node.id
+
     if (isHl) return '#1A1A2E'
+
+    // 搜索筛选：非匹配节点变暗
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase()
+      const matches = node.label?.toLowerCase().includes(q) || node.id?.toLowerCase().includes(q)
+      if (!matches) return lightenHex(baseColor, 0.55)
+    }
+
+    // 高亮模式：Fork 或关联仓库节点加亮
+    if (highlightForks && (node.type === 'fork' || (node.type === 'cluster' && node.category === 'forks'))) {
+      return '#4CAF50'
+    }
+    if (highlightRelated && (node.type === 'related' || (node.type === 'cluster' && node.category === 'related'))) {
+      return '#4CAF50'
+    }
 
     // 有选中/hover 节点时，非相关节点变浅
     const active = hoveredNode || selectedNode
@@ -481,7 +556,7 @@ function Graph3DCanvas({ graphData, onNodeClick, onNodeHover, hoveredNode, selec
       }
     }
     return baseColor
-  }, [hoveredNode, selectedNode, graphData])
+  }, [hoveredNode, selectedNode, graphData, highlightForks, highlightRelated, searchQuery])
 
   // 连线颜色（按类型上色，hover 时高亮关联线）
   const LINK_COLOR_BY_KIND = {
@@ -637,7 +712,7 @@ function NodeTooltip({ node }) {
 /* ============================================================
  * 右侧详情面板
  * ============================================================ */
-function RightDetailPanel({ node }) {
+function RightDetailPanel({ node, onNavigate }) {
   if (!node) {
     return (
       <aside className="rg-right">
@@ -645,6 +720,9 @@ function RightDetailPanel({ node }) {
           <div className="rg-detail-empty-icon">◇</div>
           <div className="rg-detail-empty-text">点击任意节点查看详情</div>
           <div className="rg-detail-empty-hint">支持主仓库、贡献者、Fork、分支、组织、关联仓库</div>
+          <div className="rg-detail-empty-hint" style={{ color: '#4CAF50', marginTop: '8px' }}>
+            新手提示：点击绿色高亮的 Fork 或关联仓库节点，可以快速了解生态并找到入门项目
+          </div>
         </div>
       </aside>
     )
@@ -653,13 +731,13 @@ function RightDetailPanel({ node }) {
   return (
     <aside className="rg-right">
       <div className="rg-detail-card">
-        <DetailContent node={node} />
+        <DetailContent node={node} onNavigate={onNavigate} />
       </div>
     </aside>
   )
 }
 
-function DetailContent({ node }) {
+function DetailContent({ node, onNavigate }) {
   // 主仓库详情
   if (node.type === 'main') {
     const r = node.data
@@ -681,6 +759,33 @@ function DetailContent({ node }) {
           <div className="rg-detail-item"><span className="rg-di-label">更新时间</span><span className="rg-di-val">{r.updatedAt}</span></div>
         </div>
         <a className="rg-detail-link" href={r.url} target="_blank" rel="noopener noreferrer">Open on GitHub →</a>
+        <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <a
+            className="rg-action-btn"
+            href={`https://github.com/${r.fullName}/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ textAlign: 'center', textDecoration: 'none', background: '#4CAF50', color: '#fff', border: 'none', fontSize: '12px' }}
+          >
+            🔍 查看入门 Issue（{r.openIssues?.toLocaleString()} 个）
+          </a>
+          <a
+            className="rg-action-btn"
+            href={`https://github.com/${r.fullName}/blob/${r.defaultBranch || 'main'}/CONTRIBUTING.md`}
+            target="_blank"
+            rel="noreferrer"
+            style={{ textAlign: 'center', textDecoration: 'none', fontSize: '12px' }}
+          >
+            📖 查看贡献指南
+          </a>
+          <button
+            className="rg-action-btn"
+            onClick={(e) => { e.stopPropagation(); onNavigate(`/analysis?url=${encodeURIComponent(r.fullName)}`) }}
+            style={{ fontSize: '12px' }}
+          >
+            📊 分析此仓库
+          </button>
+        </div>
       </>
     )
   }
@@ -816,10 +921,11 @@ export default function SocialPage() {
   const [hoveredNode, setHoveredNode] = useState(null)
   const [selectedNode, setSelectedNode] = usePersistState('social3d', 'selectedNodeId', null)
   const [rawData, setRawData] = usePersistState('social3d', 'rawData', null)
+  const [highlightForks, setHighlightForks] = useState(false)
+  const [highlightRelated, setHighlightRelated] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const fgRef = useRef(null)
   const navigate = useNavigate()
-  const [repoInfoMap, setRepoInfoMap] = useState(null)
-
   useScrollReveal()
 
   // 图谱数据（基于真实数据构建）
@@ -834,6 +940,16 @@ export default function SocialPage() {
     return graphData.nodes.find(n => n.id === selectedNode) || null
   }, [selectedNode, graphData])
 
+  // 搜索结果
+  const searchResults = useMemo(() => {
+    if (!searchQuery.trim()) return []
+    const q = searchQuery.toLowerCase()
+    const typeLabels = { main: '主仓库', cluster: '关系簇', contributor: '贡献者', fork: 'Fork', branch: '分支', organization: '组织', related: '关联' }
+    return graphData.nodes
+      .filter(n => n.label?.toLowerCase().includes(q) || n.id?.toLowerCase().includes(q))
+      .map(n => ({ ...n, typeLabel: typeLabels[n.type] || n.type }))
+  }, [searchQuery, graphData])
+
   // 分析：调用真实 GitHub API
   const analyze = useCallback(async () => {
     if (!url.trim()) return
@@ -844,23 +960,12 @@ export default function SocialPage() {
     setError('')
     setRawData(null)
     setSelectedNode(null)
+    setSearchQuery('')
 
     try {
       const data = await fetchRepoGraphData(owner, repo)
       setRawData(data)
       setSelectedNode('main')
-
-      // 批量获取仓库信息（用于信息面板展示 Stars/Forks/语言/活跃度等）
-      const repoNames = []
-      if (data.repoInfo?.fullName) repoNames.push(data.repoInfo.fullName)
-      data.forks?.forEach(f => repoNames.push(f.fullName))
-      data.related?.forEach(r => repoNames.push(r.fullName))
-      if (repoNames.length) {
-        try {
-          const { map } = await batchGetRepoInfos(repoNames)
-          setRepoInfoMap(map)
-        } catch { /* 静默 */ }
-      }
     } catch (err) {
       console.error('[社交图谱] 获取数据失败:', err)
       setError(err.message || '获取数据失败，请检查网络或代理设置')
@@ -869,6 +974,7 @@ export default function SocialPage() {
     }
   }, [url, setRawData, setSelectedNode])
 
+  // 节点点击
   const handleNodeClick = useCallback(node => {
     setSelectedNode(node?.id || null)
   }, [setSelectedNode])
@@ -892,11 +998,42 @@ export default function SocialPage() {
     }
   }, [fgRef])
 
+  // 搜索选中节点 → 聚焦相机
+  const handleSearchSelect = useCallback((nodeId) => {
+    setSelectedNode(nodeId)
+    setSearchQuery('')
+    const node = graphData.nodes.find(n => n.id === nodeId)
+    if (node && fgRef.current) {
+      const dist = node.type === 'main' ? 200 : node.type === 'cluster' ? 280 : 150
+      fgRef.current.cameraPosition(
+        { x: node.x || 0, y: (node.y || 0) + 40, z: (node.z || 0) + dist },
+        800
+      )
+    }
+  }, [graphData, setSelectedNode])
+
+  // 高亮切换
+  const handleToggleForks = useCallback(() => {
+    setHighlightForks(!highlightForks)
+    setHighlightRelated(false)
+  }, [highlightForks])
+
+  const handleToggleRelated = useCallback(() => {
+    setHighlightRelated(!highlightRelated)
+    setHighlightForks(false)
+  }, [highlightRelated])
+
   // 导出截图
   const handleExportImage = useCallback(() => {
-    if (fgRef.current) {
-      fgRef.current.toImage('repository-graph')
-    }
+    if (!fgRef.current) return
+    const renderer = fgRef.current.renderer()
+    if (!renderer || !renderer.domElement) return
+    renderer.render(fgRef.current.scene(), fgRef.current.camera())
+    const dataURL = renderer.domElement.toDataURL('image/png')
+    const a = document.createElement('a')
+    a.href = dataURL
+    a.download = 'repository-graph.png'
+    a.click()
   }, [fgRef])
 
   // 导出 JSON
@@ -927,6 +1064,15 @@ export default function SocialPage() {
         onFocus={handleFocus}
         onExportImage={handleExportImage}
         onExportJson={handleExportJson}
+        rawData={rawData}
+        highlightForks={highlightForks}
+        highlightRelated={highlightRelated}
+        onToggleForks={handleToggleForks}
+        onToggleRelated={handleToggleRelated}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        onSearchSelect={handleSearchSelect}
+        searchResults={searchResults}
       />
       {error ? (
         <div className="rg-graph">
@@ -951,30 +1097,13 @@ export default function SocialPage() {
           hoveredNode={hoveredNode}
           selectedNode={selectedNodeObj}
           fgRef={fgRef}
+          highlightForks={highlightForks}
+          highlightRelated={highlightRelated}
+          searchQuery={searchQuery}
         />
       )}
-      <RightDetailPanel node={selectedNodeObj} />
+      <RightDetailPanel node={selectedNodeObj} onNavigate={navigate} />
     </section>
-    {selectedNodeObj && repoInfoMap && (
-      <div className="social-node-info" data-reveal>
-        <div className="social-node-info-header">
-          <span className="social-node-info-name">{selectedNodeObj.label || selectedNodeObj.id}</span>
-          {selectedNodeObj.data?.url && (
-            <a href={selectedNodeObj.data.url} target="_blank" rel="noreferrer" className="social-node-info-link">在 GitHub 查看 →</a>
-          )}
-        </div>
-        {selectedNodeObj.data?.fullName && repoInfoMap.get(selectedNodeObj.data.fullName) && (
-          <div className="social-node-info-stats">
-            <div className="social-node-info-stat">⭐ {repoInfoMap.get(selectedNodeObj.data.fullName).stars?.toLocaleString() || '—'}</div>
-            <div className="social-node-info-stat">🍴 {repoInfoMap.get(selectedNodeObj.data.fullName).forks?.toLocaleString() || '—'}</div>
-            <div className="social-node-info-stat">🔤 {repoInfoMap.get(selectedNodeObj.data.fullName).language || '—'}</div>
-          </div>
-        )}
-        <button className="social-node-info-analyze" onClick={() => navigate(`/analysis?url=${encodeURIComponent(selectedNodeObj.data?.fullName || selectedNodeObj.id)}`)}>
-          分析此仓库 📊
-        </button>
-      </div>
-    )}
     </>
   )
 }

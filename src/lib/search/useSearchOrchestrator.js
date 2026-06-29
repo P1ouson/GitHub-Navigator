@@ -59,11 +59,23 @@ export function useSearchOrchestrator() {
   // 回调集合（稳定引用）
   const cb = useMemo(() => ({
     onState: (partial) => setState(prev => ({ ...prev, ...partial })),
-    onResults: (results) => { orch._results = results; setResults(results); },
-    onRankedSections: (sections) => { orch._rankedSections = sections; setRankedSections(sections); },
+    onResults: (results) => {
+      const val = typeof results === 'function' ? results(orch._results) : results
+      orch._results = val
+      setResults(val)
+    },
+    onRankedSections: (sections) => {
+      const val = typeof sections === 'function' ? sections(orch._rankedSections) : sections
+      orch._rankedSections = val
+      setRankedSections(val)
+    },
     onIntent: (intent) => { orch._intent = intent; setIntent(intent); },
     onActiveTab: (tab) => { orch._activeTab = tab; setActiveTab(tab); },
-    onRagAnswer: (answer) => { orch._ragAnswer = answer; setRagAnswer(answer); },
+    onRagAnswer: (answer) => {
+      const val = typeof answer === 'function' ? answer(orch._ragAnswer) : answer
+      orch._ragAnswer = val
+      setRagAnswer(val)
+    },
     onRagLoading: (loading) => setState(prev => ({ ...prev, ragLoading: loading })),
   }), [setResults, setRankedSections, setIntent, setActiveTab, setRagAnswer])
 
@@ -121,6 +133,7 @@ export function useSearchOrchestrator() {
   }, [orch, cb])
 
   const restoreFromCache = useCallback((data) => {
+    // 恢复渲染快照
     if (data.rankedSections) {
       orch._rankedSections = data.rankedSections
       setRankedSections(data.rankedSections)
@@ -141,6 +154,8 @@ export function useSearchOrchestrator() {
       orch._ragAnswer = data.ragAnswer
       setRagAnswer(data.ragAnswer)
     }
+    // 恢复 fetcher 数据池（repoItems / issueItems 等）
+    orch.restoreItems(data)
     setState(prev => ({ ...prev, status: 'idle', hint: '', error: null }))
   }, [])
 

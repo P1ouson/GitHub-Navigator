@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { getGlobalStats } from '../lib/github.js'
 import { useScrollReveal } from '../lib/useScrollReveal.js'
+import SettingsModal from '../components/SettingsModal.jsx'
 
 const highlights = [
   { icon: '⚡', title: '开箱即用', desc: '无需配置即可搜索、分析、Fork，核心功能完全免费' },
@@ -101,6 +102,7 @@ export default function HomePage() {
   const [query, setQuery] = useState('')
   const [stats, setStats] = useState(null)
   const [selectedType, setSelectedType] = useState(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const navigate = useNavigate()
   const inputRef = useRef(null)
 
@@ -139,6 +141,7 @@ export default function HomePage() {
   }
 
   return (
+    <>
     <div className="home-page">
       {/* Hero — 渐变标题 + 浮动光斑背景 */}
       <section className="home-hero">
@@ -161,6 +164,7 @@ export default function HomePage() {
               开始探索 <span className="cta-arrow">→</span>
             </button>
             <Link to="/explore" className="hero-cta-ghost">随便逛逛</Link>
+            <button className="hero-cta-ghost" onClick={() => setSettingsOpen(true)}>配置 API</button>
           </div>
         </div>
       </section>
@@ -410,5 +414,7 @@ export default function HomePage() {
         </div>
       </section>
     </div>
+    <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </>
   )
 }

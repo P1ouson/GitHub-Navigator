@@ -1,6 +1,4 @@
-import { useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import SettingsModal from './SettingsModal.jsx'
 
 const navItems = [
   { to: '/', label: '首页' },
@@ -14,34 +12,26 @@ const navItems = [
 ]
 
 export default function Navbar() {
-  const [settingsOpen, setSettingsOpen] = useState(false)
-
   return (
-    <>
-      <nav className="nav">
-        <NavLink to="/" className="nav-brand">
-          <span className="nav-brand-mark">N</span>
-          GitHub Navigator
-        </NavLink>
-        <div className="nav-right">
-          <div className="nav-links">
-            {navItems.map(item => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === '/'}
-                className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}
-              >
-                {item.label}
-              </NavLink>
-            ))}
-          </div>
-          <button className="nav-settings" onClick={() => setSettingsOpen(true)} title="设置">
-            ⚙
-          </button>
+    <nav className="nav">
+      <NavLink to="/" className="nav-brand">
+        <span className="nav-brand-mark">N</span>
+        GitHub Navigator
+      </NavLink>
+      <div className="nav-right">
+        <div className="nav-links">
+          {navItems.map(item => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}
+            >
+              {item.label}
+            </NavLink>
+          ))}
         </div>
-      </nav>
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-    </>
+      </div>
+    </nav>
   )
 }

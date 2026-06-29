@@ -148,7 +148,9 @@ export default function ContributionPage() {
 2. 补充更多上下文和技术细节，让维护者更容易理解这个 PR 的价值
 3. 用中文润色（如果原文是英文，翻译成中文）
 4. 保留原有的 Closes #xxx 引用
-5. 只输出润色后的内容，不要加任何解释`
+5. 使用纯文本格式输出，不要使用任何 Markdown 语法（不要用 ##、**、-、\`等符号）
+6. 用空行分隔段落，用缩进或编号表示层级
+7. 只输出润色后的内容，不要加任何解释`
     let result = ''
     await chatStream(systemPrompt, prForm.body, (chunk) => {
       result += chunk

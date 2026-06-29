@@ -118,38 +118,78 @@ export default function SearchPage() {
   useEffect(() => {
     const q = searchParams.get('q')
     if (q) {
-      // 缓存检查（5min TTL）
-      const cacheKey = `search_${q}`
-      const cached = sessionStorage.getItem(cacheKey)
-      if (cached) {
-        try {
-          const { data, ts } = JSON.parse(cached)
-          if (Date.now() - ts < 5 * 60 * 1000) {
+      restoreOrSearch(q)
+    }
+  }, [searchParams, doSearch])
+
+  // 无 URL 参数时，从缓存恢复最近搜索（切页回来场景）
+  // 只从缓存恢复，不发新搜索——用户切回来就是要看之前的结果
+  useEffect(() => {
+    const q = searchParams.get('q')
+    if (!q) {
+      const lastQ = sessionStorage.getItem('lastSearchQuery')
+      if (lastQ) {
+        const cacheKey = `search_${lastQ}`
+        const cached = sessionStorage.getItem(cacheKey)
+        if (cached) {
+          try {
+            const { data, ts } = JSON.parse(cached)
+            if (Date.now() - ts < 5 * 60 * 1000) {
+              restoreFromCache(data)
+              const { bang, rest } = splitBang(lastQ)
+              setSelectedType(bang)
+              setQuery(rest)
+              return
+            }
+          } catch {}
+        }
+        // 缓存不存在或已过期：恢复查询文本但不重新搜索，让用户看到之前搜了什么
+        const { bang, rest } = splitBang(lastQ)
+        setSelectedType(bang)
+        setQuery(rest)
+      }
+    }
+  }, [])  // 只在挂载时执行一次
+
+  function restoreOrSearch(q) {
+    // 缓存检查（5min TTL）
+    const cacheKey = `search_${q}`
+    const cached = sessionStorage.getItem(cacheKey)
+    if (cached) {
+      try {
+        const { data, ts } = JSON.parse(cached)
+        if (Date.now() - ts < 5 * 60 * 1000) {
+          // 检查缓存是否有效：rankedSections 非 null（搜索已完成，即使结果为空也是有效状态）、
+          // knowledge 有内容、或 ragAnswer 有答案
+          const hasContent =
+            (data.rankedSections != null) ||
+            (data.results && data.results.knowledge && data.results.knowledge.length > 0) ||
+            (data.ragAnswer && data.ragAnswer.answer)
+          if (hasContent) {
             restoreFromCache(data)
-            // 拆分 bang 前缀
             const { bang, rest } = splitBang(q)
             setSelectedType(bang)
             setQuery(rest)
             return
           }
-        } catch {}
-      }
-
-      // 拆分 bang 前缀：!repo react → selectedType='!repo', query='react'
-      const { bang, rest } = splitBang(q)
-      setSelectedType(bang)
-      setQuery(rest)
-      // 新搜索时重置筛选状态，避免持久化的旧筛选条件过滤掉新结果
-      setIssueLanguageFilter(new Set())
-      setRepoLanguageFilter(new Set())
-      setTopicFilter(new Set())
-      setIssueLabelFilter(new Set())
-      setDifficultyFilter(new Set())
-      setIssuePage(1)
-      setRepoPage(1)
-      doSearch(q, configRef.current)
+        }
+      } catch {}
     }
-  }, [searchParams, doSearch])
+    // 缓存不存在、过期、或为空 → 执行新搜索
+
+    const { bang, rest } = splitBang(q)
+    setSelectedType(bang)
+    setQuery(rest)
+    // 新搜索时重置筛选状态
+    setIssueLanguageFilter(new Set())
+    setRepoLanguageFilter(new Set())
+    setTopicFilter(new Set())
+    setIssueLabelFilter(new Set())
+    setDifficultyFilter(new Set())
+    setIssuePage(1)
+    setRepoPage(1)
+    doSearch(q, configRef.current)
+  }
 
   // 自动预加载：接近末页时后台续拉
   useEffect(() => {
@@ -405,7 +445,7 @@ export default function SearchPage() {
         {isLoading && <div className="search-status">搜索中...</div>}
         {isLoadingMore && <div className="search-status search-status-sub">正在加载更多...</div>}
         {state.error && <div className="search-status error">{state.error}</div>}
-        {!isLoading && !isLoadingMore && !state.error && intent && rankedSections &&
+        {!isLoading && !isLoadingMore && !state.error && !state.ragLoading && !ragAnswer && intent && rankedSections &&
          !results.knowledge && currentFilteredItems.length === 0 &&
          !Object.values(rankedSections).some(arr => arr && arr.length > 0) && (
           <div className="search-status">无结果</div>

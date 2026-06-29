@@ -164,6 +164,18 @@ export default defineConfig(async () => {
           rewrite: (path) => path.replace(/^\/api\/searx3/, ''),
           agent,
         },
+        '/api/devdocs': {
+          target: 'https://documents.devdocs.io',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api\/devdocs/, ''),
+          agent,
+        },
+        '/api/ghblog': {
+          target: 'https://github.blog',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api\/ghblog/, ''),
+          agent,
+        },
       },
     },
   }

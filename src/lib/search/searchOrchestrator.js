@@ -54,8 +54,9 @@ import { routeQuery, applyLLMIntent } from '../intent.js'
 import { searchCode, parseGitHubUrl, searchReposByOrg, getRepoInfo } from '../github.js'
 import { isLLMAvailable, analyzeIntent, analyzeIntentLight, chatStream } from '../llm.js'
 import { parseInlineSyntax } from '../searchConfig.js'
-import { searchKnowledge, KB } from '../knowledge.js'
-import { askRAGStream, searchRAG } from '../rag.js'
+import { searchKnowledge } from '../knowledge.js'
+import { searchAllSources } from '../externalKB.js'
+import { askRAGStream } from '../rag.js'
 import { matchIntentByEmbedding, cacheIntentResult } from '../intentEmbedding.js'
 import { searchSearxng } from '../searxng.js'
 import { IssueFetcher } from '../issueLoader.js'
@@ -114,6 +115,33 @@ export class SearchOrchestrator {
   get lockedLanguages() { return this._lockedLanguages }
   /** 原始 issue 快照（label 清除时恢复用） */
   get originalIssue() { return this._originalIssue }
+
+  /** 从缓存恢复 fetcher 数据池（切页回来时使用） */
+  restoreItems(data) {
+    if (data.repoItems && data.repoItems.length > 0) {
+      this.repoFetcher.pool.items = data.repoItems
+      this.repoFetcher.pool.totalCount = data.totalCount?.repo || 0
+      this.repoFetcher.pool.hasMore = true
+    }
+    if (data.issueItems && data.issueItems.length > 0) {
+      this.issueFetcher.pool.items = data.issueItems
+      this.issueFetcher.pool.totalCount = data.totalCount?.issue || 0
+      this.issueFetcher.pool.hasMore = true
+    }
+    if (data.codeItems && data.codeItems.length > 0) {
+      if (this.codeFetcher) {
+        this.codeFetcher.pool.items = data.codeItems
+        this.codeFetcher.pool.totalCount = data.totalCount?.code || 0
+        this.codeFetcher.pool.hasMore = true
+      }
+    }
+    if (data.originalIssue) {
+      this._originalIssue = data.originalIssue
+    }
+    if (data.totalCount) {
+      this._totalCount = { ...this._totalCount, ...data.totalCount }
+    }
+  }
 
   /* ===== 主搜索入口 ===== */
 
@@ -255,41 +283,71 @@ export class SearchOrchestrator {
       let hadError = false
 
       try {
-        // 知识库 + RAG
+        // 知识库 + RAG（多源并行检索：DevDocs / GitHub Docs / GitHub Blog / GitHub Skills）
         if (effectivePlan.sources.includes('knowledge') && config.sources.qa?.enabled !== false) {
           const kbQuery = effectivePlan.query_by_source.knowledge || cleanQuery
-          const kbMatches = searchKnowledge(kbQuery, 5)
-          if (kbMatches.length > 0) rawResults.knowledge = kbMatches
 
-          // RAG 异步替换
-          searchRAG(kbQuery, 5).then(ragResults => {
+          // 本地 KB 关键词匹配（快速，保留作为 knowledge 结果展示）
+          const kbMatches = searchKnowledge(kbQuery, 5)
+          const strongKbMatches = kbMatches.filter(m => m.score >= 10)
+          if (strongKbMatches.length > 0) rawResults.knowledge = strongKbMatches
+
+          // 外部多源检索（异步，不阻塞主流程）
+          searchAllSources(kbQuery).then(externalResults => {
             if (gen !== this._gen) return
-            const seenIds = new Set()
-            const betterMatches = []
-            for (const r of ragResults) {
-              if (r.score < 0.3) continue
-              if (!seenIds.has(r.docId)) {
-                seenIds.add(r.docId)
-                const entry = KB.find(e => e.id === r.docId)
-                if (entry) betterMatches.push(entry)
-              }
-            }
-            if (betterMatches.length > 0) {
-              cb.onResults(prev => ({ ...prev, knowledge: betterMatches }))
+            if (externalResults.length > 0) {
+              cb.onResults(prev => ({
+                ...prev,
+                knowledge: externalResults.slice(0, 5),
+                externalSources: externalResults,
+              }))
             }
           }).catch(() => {})
 
           // LLM 问答流式（仅 qa intent 或 KB 命中时触发）
-          if (isLLMAvailable() && (ruleIntent === 'qa' || kbMatches.length > 0)) {
+          if (isLLMAvailable() && (ruleIntent === 'qa' || strongKbMatches.length > 0)) {
             cb.onRagLoading(true)
             cb.onRagAnswer(null)
-            // 动态 token：KB 命中多时用更多 token 保证回答质量，少时用小 token 加速
-            const ragTokens = kbMatches.length > 3 ? 512 : 256
+            // 固定 512 token，但 prompt 会要求 LLM 在范围内完整结束
+            const ragTokens = 512
             askRAGStream(cleanQuery, (partialAnswer) => {
               if (gen !== this._gen) return
               cb.onRagAnswer(prev => prev ? { ...prev, answer: partialAnswer } : { answer: partialAnswer, sources: [] })
             }, ragTokens)
-              .then(res => { if (gen === this._gen) cb.onRagAnswer(res) })
+              .then(res => {
+                if (gen === this._gen) {
+                  cb.onRagAnswer(res)
+                  // RAG 完成后更新缓存，确保切页回来能恢复 AI 回答
+                  // 注意：Phase 1 缓存保存时 ragAnswer 永远是 null，此处必须补存。
+                  // 若 Phase 1 缓存保存失败（getItem 返回 null），则补存完整缓存而非仅 patch。
+                  try {
+                    const cacheKey = `search_${q}`
+                    const cached = sessionStorage.getItem(cacheKey)
+                    if (cached) {
+                      const parsed = JSON.parse(cached)
+                      parsed.data.ragAnswer = res
+                      sessionStorage.setItem(cacheKey, JSON.stringify(parsed))
+                    } else {
+                      sessionStorage.setItem(cacheKey, JSON.stringify({
+                        data: {
+                          rankedSections: this._rankedSections,
+                          results: this._results,
+                          intent: this._intent,
+                          activeTab: this._activeTab,
+                          ragAnswer: res,
+                          repoItems: this.repoFetcher.items,
+                          issueItems: this.issueFetcher.items,
+                          codeItems: this.codeFetcher?.items || [],
+                          originalIssue: this._originalIssue,
+                          totalCount: this._totalCount,
+                        },
+                        ts: Date.now(),
+                      }))
+                      sessionStorage.setItem('lastSearchQuery', q)
+                    }
+                  } catch {}
+                }
+              })
               .catch(err => console.warn('[RAG] 问答失败:', err.message))
               .finally(() => { if (gen === this._gen) cb.onRagLoading(false) })
           }
@@ -420,8 +478,9 @@ export class SearchOrchestrator {
 
         // ===== Phase 1 完成，立即回 idle（不等 LLM 收窄和 autoExpand）=====
         // 用户先看到结果，LLM 收窄和扩搜在后台跑，不阻塞 UI
-        if (gen === this._gen && !hadError) {
+        if (gen === this._gen) {
           // 写入 sessionStorage 缓存（5min TTL）
+          // 注意：即使部分源失败（hadError），已有结果仍应缓存，确保切页回来能恢复
           const cacheKey = `search_${q}`
           try {
             sessionStorage.setItem(cacheKey, JSON.stringify({
@@ -431,11 +490,20 @@ export class SearchOrchestrator {
                 intent: this._intent,
                 activeTab: this._activeTab,
                 ragAnswer: this._ragAnswer,
+                repoItems: this.repoFetcher.items,
+                issueItems: this.issueFetcher.items,
+                codeItems: this.codeFetcher?.items || [],
+                originalIssue: this._originalIssue,
+                totalCount: this._totalCount,
               },
               ts: Date.now(),
             }))
+            // 保存最近搜索词，用于切页回来时恢复
+            sessionStorage.setItem('lastSearchQuery', q)
           } catch {}
-          cb.onState({ status: 'idle', hint: '', error: null })
+          if (!hadError) {
+            cb.onState({ status: 'idle', hint: '', error: null })
+          }
         }
 
         // ===== LLM 收窄 + autoExpand 后台跑（不阻塞 idle，不阻塞 _running）=====

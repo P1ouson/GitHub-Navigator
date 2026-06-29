@@ -1,14 +1,19 @@
 import { useState, useCallback } from 'react'
 import { searchRepositories } from '../lib/github.js'
-import { chatStream } from '../lib/llm.js'
+import { chatStream, LIGHT_LLM_MODEL } from '../lib/llm.js'
 import { usePersistState } from '../lib/pageCache.js'
 import { useScrollReveal } from '../lib/useScrollReveal.js'
 
-// 随机语言池
+// 随机语言池（新手模式用更友好的语言）
 const LANG_POOL = [
   'JavaScript', 'TypeScript', 'Python', 'Go', 'Rust', 'Java', 'C++', 'Ruby',
   'PHP', 'Swift', 'Kotlin', 'Dart', 'Scala', 'Elixir', 'Haskell', 'Clojure',
   'Lua', 'R', 'Julia', 'Zig', 'Nim', 'Crystal', 'OCaml', 'F#',
+]
+
+// 新手友好语言池：入门门槛低的语言
+const BEGINNER_LANG_POOL = [
+  'JavaScript', 'TypeScript', 'Python', 'Go', 'Ruby', 'Java', 'PHP', 'HTML',
 ]
 
 // 随机主题池
@@ -16,6 +21,12 @@ const TOPIC_POOL = [
   'web', 'cli', 'api', 'library', 'framework', 'tool', 'game',
   'machine-learning', 'compiler', 'database', 'devops', 'security',
   'mobile', 'desktop', 'embedded', 'visualization', 'docker',
+]
+
+// 新手友好主题池：容易理解和上手的领域
+const BEGINNER_TOPIC_POOL = [
+  'web', 'cli', 'tool', 'library', 'documentation', 'tutorial',
+  'game', 'visualization', 'api', 'docker',
 ]
 
 // 随机 star 区间
@@ -28,12 +39,20 @@ const STAR_RANGES = [
   { min: 0, max: 50000, label: '随机' },
 ]
 
+// 新手模式 star 区间：偏向有社区基础的项目，避免太冷门
+const BEGINNER_STAR_RANGES = [
+  { min: 50, max: 200, label: '新手友好·成长中' },
+  { min: 200, max: 2000, label: '新手友好·社区活跃' },
+  { min: 1000, max: 10000, label: '新手友好·明星项目' },
+  { min: 50, max: 50000, label: '新手友好·随机' },
+]
+
 function pickRandom(arr) {
   return arr[Math.floor(Math.random() * arr.length)]
 }
 
-function randomStarRange() {
-  return pickRandom(STAR_RANGES)
+function randomStarRange(beginner) {
+  return pickRandom(beginner ? BEGINNER_STAR_RANGES : STAR_RANGES)
 }
 
 export default function ExplorePage() {
@@ -43,6 +62,7 @@ export default function ExplorePage() {
   const [aiLoading, setAiLoading] = useState(false)
   const [tag, setTag] = usePersistState('explore', 'tag', '')
   const [error, setError] = useState('')
+  const [beginnerMode, setBeginnerMode] = usePersistState('explore', 'beginnerMode', false)
 
   useScrollReveal()
 
@@ -55,16 +75,23 @@ export default function ExplorePage() {
     try {
       let result, range, lang, topic, sort, page
 
-      // 重试最多 3 次，每次换不同参数
-      for (let attempt = 0; attempt < 3; attempt++) {
-        lang = pickRandom(LANG_POOL)
-        topic = Math.random() > 0.5 ? pickRandom(TOPIC_POOL) : ''
-        range = randomStarRange()
+      const isBeginner = beginnerMode
+
+      // 重试最多 2 次，每次换不同参数
+      for (let attempt = 0; attempt < 2; attempt++) {
+        lang = pickRandom(isBeginner ? BEGINNER_LANG_POOL : LANG_POOL)
+        topic = Math.random() > 0.5 ? pickRandom(isBeginner ? BEGINNER_TOPIC_POOL : TOPIC_POOL) : ''
+        range = randomStarRange(isBeginner)
         sort = Math.random() > 0.5 ? 'stars' : 'updated'
         page = Math.floor(Math.random() * 3) + 1
 
         try {
-          result = await searchRepositories(topic || lang, {
+          // 新手模式：使用 GitHub 的 good-first-issues 限定符，只搜有入门 issue 的仓库
+          const searchQuery = isBeginner
+            ? `${topic || lang} good-first-issues:>0`
+            : (topic || lang)
+
+          result = await searchRepositories(searchQuery, {
             language: lang,
             minStars: range.min,
             maxStars: range.max,
@@ -72,7 +99,6 @@ export default function ExplorePage() {
             fetchSize: 20,
           }, page)
         } catch (e) {
-          // 区分不同错误类型
           if (e?.status === 403 || e?.message?.includes('rate limit') || e?.message?.includes('secondary rate limit')) {
             setError('GitHub 搜索 API 限流，请稍等一分钟再试')
             setLoading(false)
@@ -88,7 +114,6 @@ export default function ExplorePage() {
             setLoading(false)
             return
           }
-          // 其他错误：继续重试
           console.warn('[漫游] 第', attempt + 1, '次尝试失败:', e.message)
           continue
         }
@@ -104,7 +129,7 @@ export default function ExplorePage() {
 
       const pick = pickRandom(result.items)
       setRepo(pick)
-      setTag(range.label)
+      setTag(isBeginner ? '🟢 ' + range.label : range.label)
       setAiDesc('')
       setLoading(false)
 
@@ -112,14 +137,18 @@ export default function ExplorePage() {
       setAiLoading(true)
       try {
         let desc = ''
+        const systemPrompt = isBeginner
+          ? '你是一个开源项目推荐官。用一句话（不超过40字）介绍这个仓库，突出它对新手友好的特点，语言像朋友推荐一样自然，不要用"这个项目是..."开头。'
+          : '你是一个开源项目推荐官。用一句话（不超过40字）介绍这个仓库，语言像朋友推荐一样自然，不要用"这个项目是..."开头。'
         await chatStream(
-          '你是一个开源项目推荐官。用一句话（不超过40字）介绍这个仓库，语言像朋友推荐一样自然，不要用"这个项目是..."开头。',
+          systemPrompt,
           `仓库名：${pick.name}\n描述：${pick.desc || '无'}\n语言：${pick.language || '未知'}\nStar：${pick.stars}\n话题：${(pick.topics || []).join(', ')}`,
           (chunk) => {
             desc += chunk
             setAiDesc(desc)
           },
-          128
+          128,
+          LIGHT_LLM_MODEL
         )
         if (!desc) setAiDesc(pick.desc || '')
       } catch {
@@ -132,7 +161,7 @@ export default function ExplorePage() {
       setError(`漫游失败：${err.message}`)
       setLoading(false)
     }
-  }, [])
+  }, [beginnerMode])
 
   return (
     <section className="section explore-page">
@@ -142,6 +171,35 @@ export default function ExplorePage() {
           <p className="explore-subtitle">
             像在开源世界里散步，你不知道下一个遇见的是什么
           </p>
+          <div className="explore-mode-toggle" data-reveal>
+            <button
+              className={`explore-mode-btn ${!beginnerMode ? 'active' : ''}`}
+              onClick={() => {
+                if (beginnerMode) {
+                  // 切换模式时清空旧结果，避免显示上一个模式的残留内容
+                  setRepo(null)
+                  setAiDesc('')
+                  setError('')
+                }
+                setBeginnerMode(false)
+              }}
+            >
+              🎲 随机探索
+            </button>
+            <button
+              className={`explore-mode-btn ${beginnerMode ? 'active' : ''}`}
+              onClick={() => {
+                if (!beginnerMode) {
+                  setRepo(null)
+                  setAiDesc('')
+                  setError('')
+                }
+                setBeginnerMode(true)
+              }}
+            >
+              🟢 新手友好
+            </button>
+          </div>
         </div>
 
         <div className="explore-card-wrap" data-reveal="scale">
@@ -156,6 +214,11 @@ export default function ExplorePage() {
             <div className="explore-empty">
               <div className="explore-empty-icon">🗺️</div>
               <p>点一下按钮，随机探索一个 GitHub 仓库</p>
+              {beginnerMode && (
+                <p className="explore-empty-hint">
+                  新手模式已开启：优先推荐有文档、教程和入门标签的项目
+                </p>
+              )}
               <button className="explore-btn" onClick={fetchRandom}>
                 开始漫游
               </button>

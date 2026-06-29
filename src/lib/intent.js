@@ -433,8 +433,15 @@ function extractCoreKeywords(query) {
     .replace(/数据库/g, '__DB__')
     .replace(/库/g, '')
     .replace(/__DB__/g, '数据库')
+    // 填充词（对 GitHub 搜索无意义）
+    .replace(/相关|特别|比较|流行|火|最佳|实践|大家|推荐一下|好看|好用|好玩|经典|热门|新型|最新|更新|怎么|如何|怎样|请问|请问一下|问一下/g, '')
     // 中文口语词
     .replace(/我想|我要|我需要|我想要|帮我|麻烦|请问|想要|想找|找一下|找点|看看|谢谢|找|给|上|去/g, '')
+    // 保护复合词（在"无"被移除前保护"无限"等）
+    .replace(/无限/g, 'INFINITE_')
+    .replace(/无/g, '')
+    .replace(/INFINITE_/g, '无限')
+    .replace(/star|stars|★|以上/g, '')
     // 中文数字+量词（star 一万以上、5k 以上等）
     .replace(/[0-9]+\s*[万千百千kK]+\s*以上|以上|以下|超过|不到|大约|大概|左右/g, '')
     // 移除 star/收藏/点赞 等指标词（用边界匹配，避免破坏 starter等词）
@@ -442,11 +449,10 @@ function extractCoreKeywords(query) {
     .replace(/收藏|点赞|加星|星标/g, '')
     // 移除残留的"万以""千以"等
     .replace(/[万千百kK]+以/g, '')
-    // 移除残留的孤立数字（一万→一、5k→5）
-    // 保护常见带数字的缩写（e2e, b2b, o2o, i18n, l10n, a11y, k8s, w3c 等）
-    .replace(/\b(e2e|b2b|o2o|i18n|l10n|a11y|k8s|w3c|b2c|c2c|p2p|s3|ec2|r2)\b/gi, m => '__' + m.toUpperCase() + '__')
+    // 移除数字（先保护 k8s/e2e 等缩写中的数字）
+    .replace(/\b(k8s|e2e|b2b|o2o|i18n|l10n|a11y|w3c|b2c|c2c|p2p|s3|ec2|r2)\b/gi, m => m.replace(/\d/g, d => '[' + d + ']'))
     .replace(/[0-9]+|[一二三四五六七八九十]+/g, '')
-    .replace(/__(E2E|B2B|O2O|I18N|L10N|A11Y|K8S|W3C|B2C|C2C|P2P|S3|EC2|R2)__/g, m => m.toLowerCase().replace(/__/g, ''))
+    .replace(/\[(\d)\]/g, '$1')
     // 移除版本号残留的孤立点（python 3.10 → python . → python）
     .replace(/^\s*\.\s*|\s*\.\s*$|\s*\.\s+(?=\s)/g, ' ')
     // 移除"的"等孤立助词（"中"保留，可能是"中文"等词的一部分）
@@ -464,6 +470,16 @@ function extractCoreKeywords(query) {
     .replace(/\bissues?\b/gi, '')
     // 清理多余空格和括号
     .replace(/[（）()【】\[\]]/g, ' ')
+    // 修复：不删除包含在复合词中的"理"和"处"
+    // 移除孤立的"库"，但保护"图像处理"、"数据库"、"机器学习"等复合词
+    result = result
+      .replace(/数据库/g, '__DB__')
+      .replace(/机器学习/g, '__ML__')
+      .replace(/图像处理/g, '__IMG_PROCESS__')
+      .replace(/库/g, '')
+      .replace(/__DB__/g, '数据库')
+      .replace(/__ML__/g, '机器学习')
+      .replace(/__IMG_PROCESS__/g, '图像处理')
     .replace(/\s+/g, ' ')
     .trim()
   // 如果清理后为空，返回空字符串（调用方用 cleanQuery 兜底）
@@ -535,8 +551,9 @@ function extractFiltersFromQuery(query) {
     if (!isNaN(n)) return n
     return cnNumMap[s] || 0
   }
-  const starMatch = query.match(/(?:star|★|星)\s*([0-9一二三四五六七八九十]+)\s*[万千kK]?\s*以上/) ||
-                    query.match(/([0-9一二三四五六七八九十]+)\s*[万千kK]\s*以上/)
+  const starMatch = query.match(/(?:star|★|星)\s*([0-9一二三四五六七八九十]+)\s*[万千百kK]?\s*以上/) ||
+                    query.match(/([0-9一二三四五六七八九十]+)\s*[万千百kK]\s*以上/) ||
+                    query.match(/([0-9一二三四五六七八九十]+)\s*[万千百kK]\s*star/)
   if (starMatch) {
     let n = parseCnNum(starMatch[1])
     if (/万/.test(starMatch[0])) n *= 10000
@@ -627,8 +644,10 @@ function buildIntentQueryBySource(githubQuery, naturalQuery) {
  */
 const OBJECT_KEYWORDS = {
   repo: [
-    '项目', '仓库', '工程', '框架', '库', 'demo', '示例', '脚手架', 'boilerplate',
+    '项目', '仓库', '工程', '框架', 'demo', '示例', '脚手架', 'boilerplate',
     'starter', 'template', 'project', 'repo', 'repository', 'repositories',
+    '架构', '引擎', '工具库', '类库', '组件库', '代码库', '平台',
+    '算法', '模型', '系统', '网络', '数据集', '环境',
   ],
   issue: [
     'issue', '问题', 'bug', '任务', '认领', '修复', '解决', '工单', '缺陷',
@@ -640,6 +659,9 @@ const OBJECT_KEYWORDS = {
   knowledge: [
     '是什么', '为什么', '原理', '概念', '教程', '怎么用', '文档', '区别',
     '含义', '意思', 'what is', 'why', 'how does', 'tutorial', 'docs',
+    '对比', '使用方法', '怎么使用', '如何使用', '如何完成', '如何创建',
+    '如何解决', '如何删除', '如何修改', '如何配置', '如何设置', '如何安装',
+    '如何部署', '如何实现', '最佳实践', '如何', '怎么', '怎样',
   ],
 }
 
@@ -655,7 +677,7 @@ const ATTRIBUTE_KEYWORDS = {
   },
   // 新手友好度
   beginner: {
-    yes: ['新手', '入门', '零基础', '小白', '初学者', '菜鸟', 'beginner', 'newcomer', 'starter'],
+    yes: ['新手', '新人', '入门', '零基础', '小白', '初学者', '菜鸟', 'beginner', 'newcomer', 'starter'],
   },
   // 活跃度
   activity: {
@@ -682,6 +704,8 @@ function detectObject(query) {
   }
   // issue：检查"问题/bug/issue/任务"等
   for (const kw of OBJECT_KEYWORDS.issue) {
+    // "bug" 需要词边界，排除 "debug"
+    if (kw === 'bug' && !/\bbug\b/i.test(q)) continue
     if (q.includes(kw.toLowerCase())) return { type: 'issue', matchedWord: kw }
   }
   // code：检查"代码/函数/实现"等
@@ -750,6 +774,26 @@ function detectChineseIntentV2(query) {
   // 无对象词 → 不处理，交给 L1 通用规则
   if (!type) return null
 
+  // ===== QA 强信号优先（"怎么部署XX项目"、"XX框架对比" 等）=====
+  // 即使有"项目/仓库/框架"等 repo 对象词，如果同时有 QA 强信号，应判为 QA
+  const hasQAStrongSignal = (
+    /怎么|如何|怎样|对比|区别|哪个好|哪个更好|最佳实践|是什么|什么是|是什么意思|的含义|的概念|的原理/.test(query) ||
+    /\b(how to|how do|how does|how can|vs|versus|comparison|which is better|best practice)\b/i.test(query)
+  )
+  if (hasQAStrongSignal && (type === 'repo' || type === 'code')) {
+    return {
+      confidence: 'high',
+      category: 'qa-like',
+      sources: ['knowledge', 'web', 'repo'],
+      query_by_source: buildIntentQueryBySource(techTerm || query, query),
+      filters: {},
+      fallback: 'show_all',
+      reason: `识别到 QA 意图（${matchedWord}），同时搜索知识库+仓库`,
+      intent: 'qa',
+      subIntent: 'mixed_qa',
+    }
+  }
+
   // 根据对象类型 + 属性组合搜索计划
   const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10)
 
@@ -786,9 +830,33 @@ function detectChineseIntentV2(query) {
 
   // ===== issue 对象（bug/问题/任务）=====
   if (type === 'issue') {
+    // 显式 good first issue / help wanted → 保留这些标签
+    const hasGFI = /good first issue|gfi|help wanted|up for grabs|first timers only/i.test(query)
+    if (hasGFI) {
+      const expandedQuery = techTerm
+        ? `${techTerm} good first issue OR help wanted OR "first contribution"`
+        : 'good first issue OR help wanted OR "first contribution"'
+      return {
+        confidence: 'high',
+        category: 'issue-like',
+        sources: ['issue'],
+        query_by_source: buildIntentQueryBySource(expandedQuery, query),
+        filters: {},
+        fallback: 'narrow',
+        reason: `识别到新手 issue 标签（${matchedWord}），保留 good first issue`,
+        intent: 'issue',
+        subIntent: 'beginner',
+      }
+    }
     // 报错类 → issue + code + knowledge
     if (/报错|修复|怎么解决|bug|异常|崩溃|error|exception|fix|crash|失败|不工作|无法|不能/i.test(query)) {
-      const expandedQuery = techTerm ? `${techTerm} error OR bug OR exception` : 'error OR bug OR exception'
+      // 如果有简单/新手属性 → 同时扩词 good first issue
+      const hasBeginner = attrs.beginner || attrs.complexity === 'simple'
+      const expandedQuery = techTerm
+        ? (hasBeginner
+            ? `${techTerm} good first issue OR help wanted OR beginner friendly`
+            : `${techTerm} error OR bug OR exception`)
+        : (hasBeginner ? 'good first issue OR help wanted OR beginner friendly' : 'error OR bug OR exception')
       return {
         confidence: 'high',
         category: 'issue-like',
@@ -796,9 +864,9 @@ function detectChineseIntentV2(query) {
         query_by_source: buildIntentQueryBySource(expandedQuery, query),
         filters: {},
         fallback: 'narrow',
-        reason: `识别到报错/修复意图（${matchedWord}），搜索 issue+代码+知识库`,
+        reason: `识别到报错/修复意图（${matchedWord}）${hasBeginner ? '，简单/新手 → good first issue' : '，搜索 issue+代码+知识库'}`,
         intent: 'issue',
-        subIntent: 'error',
+        subIntent: hasBeginner ? 'beginner' : 'error',
       }
     }
     // 新手 + issue → good first issue 扩词
@@ -816,6 +884,23 @@ function detectChineseIntentV2(query) {
         reason: `识别到新手 issue 意图（${matchedWord}+新手），扩词到 good first issue`,
         intent: 'issue',
         subIntent: 'beginner',
+      }
+    }
+    // 简单/轻量 + issue → good first issue 扩词
+    if (attrs.complexity === 'simple') {
+      const expandedQuery = techTerm
+        ? `${techTerm} good first issue OR help wanted OR beginner friendly`
+        : 'good first issue OR help wanted OR beginner friendly'
+      return {
+        confidence: 'high',
+        category: 'issue-like',
+        sources: ['issue'],
+        query_by_source: buildIntentQueryBySource(expandedQuery, query),
+        filters: {},
+        fallback: 'narrow',
+        reason: `识别到简单 issue 意图（${matchedWord}+简单），扩词到 good first issue`,
+        intent: 'issue',
+        subIntent: 'simple',
       }
     }
     // 普通 issue
@@ -849,31 +934,37 @@ function detectChineseIntentV2(query) {
 
   // ===== repo 对象（项目/仓库/框架）=====
   if (type === 'repo') {
-    const filters = {}
+    // 合并 extractFiltersFromQuery 的自然语言过滤条件
+    const nlFilters = extractFiltersFromQuery(query)
+    const filters = { ...nlFilters }
     let sortHint = ''
 
-    // 应用属性到 filters
+    // 应用属性到 filters（属性优先于自然语言提取）
     if (attrs.complexity === 'simple') {
       filters.minStars = 5  // 简单项目 → 低门槛
       sortHint = 'stars'
     } else if (attrs.complexity === 'complex') {
-      filters.minStars = 1000  // 复杂项目 → 高 star
+      filters.minStars = Math.max(nlFilters.minStars || 0, 1000)  // 复杂项目 → 高 star，取自然语言和属性中的较大值
     }
     if (attrs.beginner) {
       filters.minStars = Math.min(filters.minStars || 10, 200)  // 新手项目 → 小项目易理解
     }
     if (attrs.activity === 'active') {
-      filters.updatedAfter = monthAgo
-      filters.minStars = Math.max(filters.minStars || 0, 100)
+      filters.updatedAfter = nlFilters.updatedAfter || monthAgo
+      if (!filters.minStars) filters.minStars = 100
     }
     if (attrs.quality === 'high') {
       filters.minStars = Math.max(filters.minStars || 0, 1000)
       sortHint = 'stars'
     }
 
+    // 排序（自然语言提取优先，属性兜底）
+    if (nlFilters.sort) sortHint = nlFilters.sort
+    if (sortHint) filters.sort = sortHint
+
     const expandedQuery = techTerm
       ? (attrs.quality === 'high' ? `${techTerm} stars:>${filters.minStars || 100}` : techTerm)
-      : (attrs.quality === 'high' ? `stars:>${filters.minStars || 100}` : query)
+      : (attrs.quality === 'high' ? `stars:>${filters.minStars || 100}` : '')
 
     const reasonParts = [`识别到项目意图（${matchedWord}）`]
     if (attrs.complexity === 'simple') reasonParts.push('简单/轻量')
@@ -935,11 +1026,30 @@ function extractTechTerm(query) {
     .replace(/仓库|项目|代码|教程|示例|例子|案例|资源|合集|集合|清单|列表|框架|工具/g, '')
     .replace(/报错|修复|解决|bug|异常|崩溃|失败|不工作|无法|不能/g, '')
     .replace(/是什么|什么是|为什么|原因是|原理|概念|区别|含义|意思/g, '')
-    .replace(/怎么用|如何使用|怎么使用|教程|示例|demo|用法/g, '')
+    .replace(/怎么用|如何使用|怎么使用|教程|示例|demo|用法|使用方法/g, '')
     .replace(/我想|我要|我需要|我想要|帮我|麻烦|请问|想要|想找|找一下|找点|看看|谢谢|找|给|上|去/g, '')
+    // 填充词（对 GitHub 搜索无意义）
+    .replace(/相关|特别|比较|流行|火|最佳|实践|大家|一下|好看|好用|好玩|经典|热门|新型|最新|更新|怎么|如何|怎样|请问|请问一下|问一下/g, '')
     .replace(/的|了|是|在|上|下|为|不|没|无/g, ' ')
+    // 保护复合词（在"无"被移除前保护"无限"等）
+    .replace(/无限/g, 'INFINITE_')
+    .replace(/无/g, '')
+    .replace(/INFINITE_/g, '无限')
+    .replace(/star|stars|★|以上/g, '')
+    // 保护复合词（避免"库"破坏"数据库"等）
+    .replace(/数据库/g, '__DB__')
+    .replace(/机器学习/g, '__ML__')
+    .replace(/图像处理/g, '__IMG_PROCESS__')
+    .replace(/知识图谱/g, '__KG__')
+    .replace(/组件库/g, '__COMP_LIB__')
+    .replace(/库/g, '')
+    .replace(/__DB__/g, '数据库')
+    .replace(/__ML__/g, '机器学习')
+    .replace(/__IMG_PROCESS__/g, '图像处理')
+    .replace(/__KG__/g, '知识图谱')
+    .replace(/__COMP_LIB__/g, '组件库')
     .replace(/\b(good first issue|gfi|beginner|newcomer|starter|easy|simple|active|popular|awesome|best|top|recommended|trending|famous|cool|nice|help wanted|first contribution|friendly)\b/gi, '')
-    .replace(/\b(small|tiny|large|big|medium|lightweight|mini|project|projects|repositories|repository|repo|tutorial|example|sample|error|bug|exception|crash|fix)\b/gi, '')
+    .replace(/\b(small|tiny|large|big|medium|lightweight|mini|project|projects|repositories|repository|repo|tutorial|example|sample|error|bug|exception|crash|fix|framework|frameworks|library|libraries|tool|tools|boilerplate|template|scaffolding|starter|kit|game|games|app|apps|pattern|pattern)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim()
   return result
@@ -951,14 +1061,8 @@ export function routeQuery(rawQuery) {
   // Step 0: 提取过滤条件（尺寸/时间/排序等）
   const extractedFilters = extractFiltersFromQuery(trimmed)
 
-  // Step 0.5: 中文意图词专门识别（生产标准改造 P1-5/6）
-  // 对"新手/入门/简单/活跃/维护中/报错/教程/是什么"等中文意图词做专门路由 + 扩词
-  const cnIntent = detectChineseIntent(trimmed)
-  if (cnIntent) {
-    return cnIntent
-  }
-
-  // Step 1: bang 前缀（确定性，high confidence）
+  // Step 0.3: Bang 前缀（确定性，high confidence）— 在中文意图识别之前
+  // Bang 前缀是用户明确指定搜索类别，优先级最高
   const bangEntry = Object.entries(BANG_MAP).find(([bang]) =>
     trimmed.toLowerCase().startsWith(bang)
   )
@@ -980,6 +1084,13 @@ export function routeQuery(rawQuery) {
       reason: `用户使用 ${bangEntry[0]} 前缀明确指定搜索${INTENT_LABELS[intent]}`,
       intent,
     }
+  }
+
+  // Step 0.5: 中文意图词专门识别（生产标准改造 P1-5/6）
+  // 对"新手/入门/简单/活跃/维护中/报错/教程/是什么"等中文意图词做专门路由 + 扩词
+  const cnIntent = detectChineseIntent(trimmed)
+  if (cnIntent) {
+    return cnIntent
   }
 
   // Step 2: 词数统计

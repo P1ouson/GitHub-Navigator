@@ -15,6 +15,7 @@
  */
 
 import { getSetting } from './db.js'
+import { DEFAULT_SILICONFLOW_KEY } from './keys.js'
 
 /** SiliconFlow embedding API 地址 */
 export const EMBEDDING_API = 'https://api.siliconflow.cn/v1/embeddings'
@@ -45,7 +46,7 @@ export function __resetEmbeddingCache() {
  * @returns {Promise<string>}
  */
 export async function getEmbeddingAPIKey() {
-  return await getSetting('siliconflow_api_key') || 'sk-huzesdqsfacrwehmnoaaezatkcqzrcvdckwwqujjgqethywx'
+  return await getSetting('siliconflow_api_key') || DEFAULT_SILICONFLOW_KEY
 }
 
 /**
